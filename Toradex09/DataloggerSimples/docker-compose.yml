@@ -1,0 +1,15 @@
+services:
+  toradex09-debug:
+    build:
+      context: .
+      dockerfile: Dockerfile.debug
+    image: ${LOCAL_REGISTRY}:5002/toradex09-debug:${TAG}
+    ports:
+      - ${DEBUG_SSH_PORT}:${DEBUG_SSH_PORT}
+      - ${DEBUG_PORT1}:${DEBUG_PORT1}
+
+  toradex09:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_LOGIN}/toradex09:${TAG}

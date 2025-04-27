@@ -1,0 +1,6 @@
+{
+    "projectName": "Toradex09",
+    "templateName": "python3Console",
+    "containerName": "toradex09",
+    "torizonOSMajor": "7"
+}
