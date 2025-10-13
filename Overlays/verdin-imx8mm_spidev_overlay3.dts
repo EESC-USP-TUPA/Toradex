@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * Copyright 2022 Toradex
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "toradex,verdin-imx8mm";
+};
+
+/* Desativar o dispositivo CAN que está usando o SPI2 */
+&mcp251xfd {
+    status = "disabled";
+};
+
+/* Configurar o SPI2 */
+&ecspi2 {
+    #address-cells = <1>;
+    #size-cells = <0>;
+    status = "okay";
+    pinctrl-0 = <&pinctrl_ecspi2>;
+    
+    spidev@0 {
+        compatible = "rohm,dh2228fv";
+        reg = <0>;
+        spi-max-frequency = <10000000>;
+    };
+};
+
+/* Corrigir a configuração de pinos */
+&iomuxc {
+    pinctrl_ecspi2: ecspi2grp {
+        fsl,pins = <
+            /* CLK - drive strength máximo + slew rate rápido */
+            0x01A4 0x9C   /* SCLK */
+            
+            /* Outros pinos com configuração padrão */
+            0x01A8 0x82   /* MOSI */
+            0x01AC 0x82   /* MISO */
+            0x01B0 0x82   /* SS0 */
+        >;
+    };
+};

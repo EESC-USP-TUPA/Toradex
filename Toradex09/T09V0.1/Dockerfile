@@ -1,5 +1,24 @@
-ARG IMAGE_ARCH=arm64v8
-FROM torizon/${IMAGE_ARCH}-debian-base@sha256:e52e2f7288f4476b3b415fb644265fd5627823086977cfdf563b5a31911854be
+ARG BASE_VERSION=3
+
+##
+# Board architecture
+# arm or arm64
+##
+ARG IMAGE_ARCH=arm64
+
+##
+# Board GPU vendor prefix
+##
+ARG GPU=vivante
+
+##
+# SoM
+##
+ARG MACHINE=verdin-imx8mm
+
+# BUILD ------------------------------------------------------------------------
+FROM --platform=linux/${IMAGE_ARCH} \
+     torizon/qt5-wayland-imx8:4 AS deploy
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -23,7 +42,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY can_receiver.py .
+COPY src ./src
 
 # Configure CAN interface and run
-CMD ["sh", "-c", "ip link set can0 up type can bitrate 500000 && python3 can_receiver.py"]
+CMD ["sh", "-c", "ip link set can0 down || true && \
+     ip link set can0 type can bitrate 250000 && \
+     ip link set can0 up && \
+     python3 src/main.py"]
