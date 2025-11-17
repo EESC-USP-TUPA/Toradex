@@ -1,0 +1,49 @@
+version: "3.9"
+services:
+  testetoradex:
+    user: root
+    privileged: true
+    image: kapukakec2/canreceiver:t08v3
+    volumes:
+      - type: bind
+        source: /tmp
+        target: /tmp
+      - type: bind
+        source: /dev
+        target: /dev
+      - type: bind
+        source: /datalogger
+        target: /datalogger
+      - type: bind
+        source: /var/rootdirs/media/EE8D-F793
+        target: /usb_datalogger
+    cap_add:
+      - CAP_NET_ADMIN
+    network_mode: host
+    device_cgroup_rules:
+      - "c 4:0 rmw"
+      - "c 4:7 rmw"
+      - "c 13:* rmw"
+      - "c 199:* rmw"
+      - "c 226:* rmw"
+    depends_on:
+      - weston
+
+  weston:
+    user: root
+    privileged: true
+    image: torizon/weston-vivante:3
+    environment:
+      - ACCEPT_FSL_EULA=1
+    network_mode: host
+    volumes:
+      - type: bind
+        source: /tmp
+        target: /tmp
+      - type: bind
+        source: /dev
+        target: /dev
+      - type: bind
+        source: /run/udev
+        target: /run/udev
+
