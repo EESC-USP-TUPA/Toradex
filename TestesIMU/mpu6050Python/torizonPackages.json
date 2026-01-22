@@ -1,8 +1,0 @@
-{
-    "deps": [
-        "python3-smbus2"
-    ],
-    "devDeps": [
-        "python3-smbus2"
-    ]
-}
