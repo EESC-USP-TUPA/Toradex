@@ -46,7 +46,7 @@ services:
       - type: bind
         source: /run/udev
         target: /run/udev
-      - shared-data:/data
+      - shared-data:/shared
 
   imu:
     build: ./imu
