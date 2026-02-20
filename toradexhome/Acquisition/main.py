@@ -1,128 +1,154 @@
 import os
+import json
 import socket
-import struct
 import threading
 import time
 import logging
 
 from can_receiver import CANReceiver
-from tcp_can_receiver import TCPCANReceiver
 from can_sender import CANSender
+from can_decoder_core import CANDecoderCore
 
 
 logging.basicConfig(level=logging.INFO)
 
 CAN_INTERFACE = os.getenv("CAN_INTERFACE", "can0")
-USE_TCP_INPUT = os.getenv("USE_TCP_INPUT", "0") == "1"
+RX_PORT = int(os.getenv("RX_STREAM_PORT", "7000"))
+TX_PORT = int(os.getenv("TX_COMMAND_PORT", "7001"))
 
-TX_PORT = 6000
-RX_PORT = 7000
+clients = []
+clients_lock = threading.Lock()
 
-FRAME_STRUCT = struct.Struct(">IB8sQ")
+decoder = CANDecoderCore()
+sender = CANSender(interface=CAN_INTERFACE)
 
 
-class BinaryAcquisitionBridge:
+# =========================================================
+# RX BROADCAST SERVER
+# =========================================================
 
-    def __init__(self):
-        self.clients = []
-        self.sender = CANSender(interface=CAN_INTERFACE)
-        self.sender.connect()
+def start_rx_server():
 
-    # =====================================================
-    # BROADCAST BINARY FRAME
-    # =====================================================
-    def broadcast(self, message):
+    def server():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", RX_PORT))
+        sock.listen(10)
 
-        data = message.data.ljust(8, b'\x00')
-        timestamp_ns = time.time_ns()
+        logging.info(f"Decoded JSON stream on port {RX_PORT}")
 
-        packed = FRAME_STRUCT.pack(
-            message.arbitration_id,
-            message.dlc,
-            data,
-            timestamp_ns
-        )
+        while True:
+            conn, addr = sock.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            logging.info(f"RX client connected: {addr}")
 
-        dead_clients = []
+            with clients_lock:
+                clients.append(conn)
 
-        for conn in self.clients:
+    threading.Thread(target=server, daemon=True).start()
+
+
+# =========================================================
+# TX COMMAND SERVER
+# =========================================================
+
+def start_tx_server():
+
+    def server():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", TX_PORT))
+        sock.listen(5)
+
+        logging.info(f"CAN TX command server on port {TX_PORT}")
+
+        while True:
+            conn, addr = sock.accept()
+            logging.info(f"TX client connected: {addr}")
+            threading.Thread(
+                target=handle_tx_client,
+                args=(conn,),
+                daemon=True
+            ).start()
+
+    threading.Thread(target=server, daemon=True).start()
+
+
+def handle_tx_client(conn):
+
+    with conn:
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                break
+
             try:
-                conn.sendall(packed)
+                msg = json.loads(data.decode())
+                can_id = int(msg["can_id"], 16)
+                payload = msg["data"]
+                extended = msg.get("extended", False)
+
+                sender.send(can_id, payload, extended)
+
+            except Exception as e:
+                logging.error(f"Invalid TX message: {e}")
+
+
+# =========================================================
+# BROADCAST FUNCTION
+# =========================================================
+
+def broadcast(payload):
+
+    raw = (json.dumps(payload) + "\n").encode()
+    dead = []
+
+    with clients_lock:
+        for c in clients:
+            try:
+                c.sendall(raw)
             except:
-                dead_clients.append(conn)
+                dead.append(c)
 
-        for c in dead_clients:
-            self.clients.remove(c)
+        for d in dead:
+            clients.remove(d)
 
-    # =====================================================
-    # RX CLIENTS (binary stream)
-    # =====================================================
-    def start_rx_server(self):
 
-        def server():
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(("0.0.0.0", RX_PORT))
-            sock.listen(5)
+# =========================================================
+# CAN CALLBACK
+# =========================================================
 
-            logging.info(f"Binary RX broadcast on {RX_PORT}")
+def handle_can(msg):
 
-            while True:
-                conn, _ = sock.accept()
-                self.clients.append(conn)
+    decoded = decoder.decode(msg)
 
-        threading.Thread(target=server, daemon=True).start()
+    if not decoded:
+        return
 
-    # =====================================================
-    # TX SERVER (binary input)
-    # =====================================================
-    def start_tx_server(self):
+    payload = {
+        "can_id": hex(msg.arbitration_id),
+        "timestamp_ns": time.time_ns(),
+        "signals": decoded
+    }
 
-        def server():
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(("0.0.0.0", TX_PORT))
-            sock.listen(5)
+    broadcast(payload)
 
-            logging.info(f"Binary TX server on {TX_PORT}")
 
-            while True:
-                conn, _ = sock.accept()
-                threading.Thread(
-                    target=self.handle_tx_client,
-                    args=(conn,),
-                    daemon=True
-                ).start()
-
-        threading.Thread(target=server, daemon=True).start()
-
-    def handle_tx_client(self, conn):
-
-        with conn:
-            while True:
-                raw = conn.recv(FRAME_STRUCT.size)
-                if not raw:
-                    break
-
-                arbitration_id, dlc, data, _ = FRAME_STRUCT.unpack(raw)
-
-                self.sender.send(
-                    arbitration_id,
-                    data[:dlc]
-                )
-
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
-    bridge = BinaryAcquisitionBridge()
+    sender.connect()
 
-    bridge.start_rx_server()
-    bridge.start_tx_server()
+    start_rx_server()
+    start_tx_server()
 
-    if USE_TCP_INPUT:
-        receiver = TCPCANReceiver(port=5000)
-    else:
-        receiver = CANReceiver(interface=CAN_INTERFACE)
+    receiver = CANReceiver(interface=CAN_INTERFACE)
 
-    receiver.start_receiving(bridge.broadcast)
+    logging.info("Starting CAN reception...")
+    receiver.start_receiving(handle_can)
 
 
 if __name__ == "__main__":
