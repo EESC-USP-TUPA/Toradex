@@ -74,3 +74,7 @@ services:
 #        source: /var/rootdirs/media/EE8D-F793
 #        target: /var/rootdirs/media/EE8D-F793
 #    restart: "no"
+
+
+volumes:
+  shared-data:
