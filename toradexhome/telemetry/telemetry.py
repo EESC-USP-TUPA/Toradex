@@ -18,13 +18,13 @@ RECONNECT_DELAY = 2
 MCAP_FOLDER = "/logs"
 os.makedirs(MCAP_FOLDER, exist_ok=True)
 
-# 200Hz → 20Hz
+# 200 Hz input → 20 Hz output
 MOVING_WINDOW = 10
-PUBLISH_RATE_DIVIDER = 10
+PUBLISH_DIVIDER = 10
 
 
 # =========================================================
-# MCAP RECORDER (RAW 200 Hz)
+# MCAP RECORDER (FULL RAW DATA @200Hz)
 # =========================================================
 
 class MCAPRecorder:
@@ -36,7 +36,7 @@ class MCAPRecorder:
         self.writer = Writer(self.file)
         self.writer.start()
 
-        self.schema = self.writer.register_schema(
+        self.schema_id = self.writer.register_schema(
             name="json",
             encoding="jsonschema",
             data=b'{"type":"object"}'
@@ -49,14 +49,15 @@ class MCAPRecorder:
     def write(self, topic, payload, timestamp_ns):
 
         if topic not in self.channels:
-            self.channels[topic] = self.writer.register_channel(
+            channel_id = self.writer.register_channel(
                 topic=topic,
                 message_encoding="json",
-                schema_id=self.schema.id
+                schema_id=self.schema_id
             )
+            self.channels[topic] = channel_id
 
         self.writer.add_message(
-            channel_id=self.channels[topic].id,
+            channel_id=self.channels[topic],
             log_time=timestamp_ns,
             publish_time=timestamp_ns,
             data=json.dumps(payload).encode()
@@ -68,7 +69,7 @@ class MCAPRecorder:
 
 
 # =========================================================
-# MOVING AVERAGE FILTER
+# MOVING AVERAGE FILTER (20Hz)
 # =========================================================
 
 class MovingAverage:
@@ -79,21 +80,18 @@ class MovingAverage:
 
     def process(self, topic, value):
 
-        buf = self.buffers[topic]
-        buf.append(value)
-
+        self.buffers[topic].append(value)
         self.counter += 1
 
-        # Publish only every 10 samples (20 Hz)
-        if self.counter % PUBLISH_RATE_DIVIDER != 0:
+        # Downsample 200Hz → 20Hz
+        if self.counter % PUBLISH_DIVIDER != 0:
             return None
 
-        avg = sum(buf) / len(buf)
-        return avg
+        return sum(self.buffers[topic]) / len(self.buffers[topic])
 
 
 # =========================================================
-# CONNECT
+# CONNECT TO ACQUISITION
 # =========================================================
 
 def connect():
@@ -141,12 +139,14 @@ def main():
                     msg = json.loads(line)
                     timestamp = msg.get("timestamp_ns", time.time_ns())
 
-                    # Save FULL RAW to MCAP
+                    # =================================================
+                    # 1️⃣ SAVE FULL RAW MESSAGE TO MCAP
+                    # =================================================
                     recorder.write("/raw", msg, timestamp)
 
-                    # ------------------------------
-                    # Send Moving Average to Foxglove
-                    # ------------------------------
+                    # =================================================
+                    # 2️⃣ SEND MOVING AVERAGE (VALUES ONLY) TO FOXGLOVE
+                    # =================================================
 
                     if msg.get("source") == "imu":
 
