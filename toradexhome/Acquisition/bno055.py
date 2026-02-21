@@ -1,97 +1,146 @@
 import time
 import struct
 import logging
+import threading
 from smbus2 import SMBus
 
 BNO055_ADDRESS = 0x28
 
+# Registers
 BNO055_OPR_MODE = 0x3D
 BNO055_PWR_MODE = 0x3E
 BNO055_SYS_TRIGGER = 0x3F
 BNO055_UNIT_SEL = 0x3B
-BNO055_EULER_H_LSB = 0x1A
-BNO055_CALIB_STAT = 0x35
+
+REG_GYRO = 0x14
+REG_LINEAR_ACCEL = 0x28
+REG_EULER = 0x1A
 
 CONFIG_MODE = 0x00
-NDOF_MODE = 0x0C
+IMUPLUS_MODE = 0x08  # Lower latency than NDOF
 
 logger = logging.getLogger("BNO055")
 
+
+# =========================================================
+# Low-level helpers
+# =========================================================
 
 def write_byte(bus, reg, value):
     bus.write_byte_data(BNO055_ADDRESS, reg, value)
     time.sleep(0.01)
 
 
-def read_bytes(bus, reg, length):
-    return bus.read_i2c_block_data(BNO055_ADDRESS, reg, length)
+def read_vector(bus, reg):
+    data = bus.read_i2c_block_data(BNO055_ADDRESS, reg, 6)
+    x, y, z = struct.unpack('<hhh', bytes(data))
+    return x, y, z
 
+
+# =========================================================
+# Initialization
+# =========================================================
 
 def init_bno055(bus):
+
     write_byte(bus, BNO055_OPR_MODE, CONFIG_MODE)
     time.sleep(0.05)
 
     write_byte(bus, BNO055_PWR_MODE, 0x00)
     write_byte(bus, BNO055_SYS_TRIGGER, 0x00)
+
+    # Units:
+    # Accel → m/s²
+    # Gyro → deg/s
+    # Euler → degrees
     write_byte(bus, BNO055_UNIT_SEL, 0x00)
 
-    write_byte(bus, BNO055_OPR_MODE, NDOF_MODE)
+    write_byte(bus, BNO055_OPR_MODE, IMUPLUS_MODE)
     time.sleep(0.1)
 
 
-def read_euler(bus):
-    data = read_bytes(bus, BNO055_EULER_H_LSB, 6)
-    heading, roll, pitch = struct.unpack('<hhh', bytes(data))
-    return heading / 16.0, roll / 16.0, pitch / 16.0
-
-
-def read_calibration(bus):
-    cal = bus.read_byte_data(BNO055_ADDRESS, BNO055_CALIB_STAT)
-    sys = (cal >> 6) & 0x03
-    gyro = (cal >> 4) & 0x03
-    accel = (cal >> 2) & 0x03
-    mag = cal & 0x03
-    return sys, gyro, accel, mag
-
-
 # =========================================================
-# START IMU LOOP
+# START IMU LOOP (200 Hz Stable)
 # =========================================================
 
-def start(callback, i2c_bus=3):
+def start(callback, i2c_bus=3, rate_hz=200):
+
+    period = 1.0 / rate_hz
 
     def imu_loop():
+
         with SMBus(i2c_bus) as bus:
 
             init_bno055(bus)
-            logger.info("BNO055 initialized")
+            logger.info(f"BNO055 IMUPLUS running at {rate_hz} Hz")
+
+            next_time = time.perf_counter()
 
             while True:
+
                 try:
-                    heading, roll, pitch = read_euler(bus)
-                    sys, gyro, accel, mag = read_calibration(bus)
+                    timestamp = time.time_ns()
+
+                    # ===============================
+                    # Euler (1 LSB = 1/16 deg)
+                    # ===============================
+                    h, r, p = read_vector(bus, REG_EULER)
+                    heading = h / 16.0
+                    roll = r / 16.0
+                    pitch = p / 16.0
+
+                    # ===============================
+                    # Gyro (1 LSB = 1/16 deg/s)
+                    # ===============================
+                    gx, gy, gz = read_vector(bus, REG_GYRO)
+                    gx /= 16.0
+                    gy /= 16.0
+                    gz /= 16.0
+
+                    # ===============================
+                    # Linear Accel (1 LSB = 1 mg)
+                    # ===============================
+                    ax, ay, az = read_vector(bus, REG_LINEAR_ACCEL)
+                    ax /= 100.0
+                    ay /= 100.0
+                    az /= 100.0
 
                     payload = {
                         "source": "imu",
-                        "timestamp_ns": time.time_ns(),
+                        "timestamp_ns": timestamp,
                         "signals": [
+
+                            # Euler
                             {"name": "/IMU/heading", "value": heading, "unit": "deg"},
                             {"name": "/IMU/roll", "value": roll, "unit": "deg"},
                             {"name": "/IMU/pitch", "value": pitch, "unit": "deg"},
-                            {"name": "/IMU/cal_sys", "value": sys, "unit": ""},
-                            {"name": "/IMU/cal_gyro", "value": gyro, "unit": ""},
-                            {"name": "/IMU/cal_accel", "value": accel, "unit": ""},
-                            {"name": "/IMU/cal_mag", "value": mag, "unit": ""}
+
+                            # Gyro
+                            {"name": "/IMU/gyro_x", "value": gx, "unit": "deg/s"},
+                            {"name": "/IMU/gyro_y", "value": gy, "unit": "deg/s"},
+                            {"name": "/IMU/gyro_z", "value": gz, "unit": "deg/s"},
+
+                            # Linear acceleration
+                            {"name": "/IMU/lin_accel_x", "value": ax, "unit": "m/s²"},
+                            {"name": "/IMU/lin_accel_y", "value": ay, "unit": "m/s²"},
+                            {"name": "/IMU/lin_accel_z", "value": az, "unit": "m/s²"},
                         ]
                     }
 
                     callback(payload)
 
-                    time.sleep(0.1)
-
                 except Exception as e:
                     logger.error(f"IMU error: {e}")
-                    time.sleep(1)
 
-    import threading
+                # ===============================
+                # Deterministic timing control
+                # ===============================
+                next_time += period
+                sleep_time = next_time - time.perf_counter()
+
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    next_time = time.perf_counter()
+
     threading.Thread(target=imu_loop, daemon=True).start()
