@@ -1,2 +1,4 @@
 python-can>=4.0.0
 smbus2
+pyserial
+requests

@@ -57,6 +57,8 @@ services:
       - ./telemetry:/app
       - ./logs:/logs
 
+    command: python3 telemetry.py
+
     depends_on:
       - acquisition
     restart: unless-stopped
@@ -76,20 +78,25 @@ services:
 #    command: python3 bno055.py
 #    restart: unless-stopped
 
+
+
   acquisition:
     build: ./Acquisition
-    container_name: acquisition_gateway
+    container_name: acquisition
 
-    # Required for CAN + I2C hardware access
+    # Required for CAN + I2C + UART hardware access
     privileged: true
 
-    # Allow direct access to CAN network stack
+    # Direct access to host CAN network stack
     network_mode: host
 
-    # I2C device passthrough
+    # Hardware passthrough
     devices:
-      - "/dev/i2c-3:/dev/i2c-3"
+      - "/dev/i2c-3:/dev/i2c-3"      # BNO055
+      - "/dev/ttymxc1:/dev/ttymxc1" # NEO-M8N UART
+
     command: python3 main.py
+
     restart: unless-stopped
 
 

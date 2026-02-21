@@ -9,16 +9,31 @@ from can_receiver import CANReceiver
 from can_sender import CANSender
 from can_decoder import CANDecoderCore
 from bno055 import start as start_imu
+from neo_m8n import start as start_gnss
 
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
+
+# =========================================================
+# ENV CONFIG
+# =========================================================
+
 CAN_INTERFACE = os.getenv("CAN_INTERFACE", "can0")
 RX_PORT = int(os.getenv("RX_STREAM_PORT", "7000"))
 TX_PORT = int(os.getenv("TX_COMMAND_PORT", "7001"))
+
+
+# =========================================================
+# GLOBAL STATE
+# =========================================================
 
 clients = []
 clients_lock = threading.Lock()
@@ -91,7 +106,7 @@ def start_rx_server():
         sock.bind(("0.0.0.0", RX_PORT))
         sock.listen(10)
 
-        logging.info(f"JSON stream available on port {RX_PORT}")
+        logging.info(f"JSON telemetry stream available on port {RX_PORT}")
 
         while True:
             conn, addr = sock.accept()
@@ -119,7 +134,7 @@ def start_tx_server():
         sock.bind(("0.0.0.0", TX_PORT))
         sock.listen(5)
 
-        logging.info(f"CAN command server on port {TX_PORT}")
+        logging.info(f"CAN command server running on port {TX_PORT}")
 
         while True:
             conn, addr = sock.accept()
@@ -174,15 +189,26 @@ def main():
 
     logging.info("Starting Acquisition Gateway")
 
+    # Connect CAN TX
     sender.connect()
 
+    # Start network servers
     start_rx_server()
     start_tx_server()
 
-    # 200 Hz IMU (Torque Vectoring Ready)
+    # ============================
+    # 200 Hz IMU
+    # ============================
     start_imu(callback=broadcast, rate_hz=200)
 
-    # CAN receiver (blocking loop)
+    # ============================
+    # 10 Hz GNSS (UBX NAV-PVT)
+    # ============================
+    start_gnss(callback=broadcast)
+
+    # ============================
+    # CAN RX (blocking loop)
+    # ============================
     receiver = CANReceiver(interface=CAN_INTERFACE)
     receiver.start_receiving(handle_can)
 

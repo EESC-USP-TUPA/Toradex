@@ -2,12 +2,7 @@ import socket
 import json
 import time
 import logging
-import os
-from datetime import datetime
-from collections import defaultdict, deque
-
 from foxglove_sender import FoxgloveSender
-from mcap.writer import Writer
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,118 +10,32 @@ ACQUISITION_HOST = "127.0.0.1"
 ACQUISITION_PORT = 7000
 RECONNECT_DELAY = 2
 
-MCAP_FOLDER = "/logs"
-os.makedirs(MCAP_FOLDER, exist_ok=True)
 
-# 200 Hz input → 20 Hz output
-MOVING_WINDOW = 10
-PUBLISH_DIVIDER = 10
-
-
-# =========================================================
-# MCAP RECORDER (FULL RAW DATA @200Hz)
-# =========================================================
-
-class MCAPRecorder:
-
-    def __init__(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = os.path.join(MCAP_FOLDER, f"telemetry_{timestamp}.mcap")
-        self.file = open(self.file_path, "wb")
-        self.writer = Writer(self.file)
-        self.writer.start()
-
-        self.schema_id = self.writer.register_schema(
-            name="json",
-            encoding="jsonschema",
-            data=b'{"type":"object"}'
-        )
-
-        self.channels = {}
-
-        logging.info(f"Recording MCAP → {self.file_path}")
-
-    def write(self, topic, payload, timestamp_ns):
-
-        if topic not in self.channels:
-            channel_id = self.writer.register_channel(
-                topic=topic,
-                message_encoding="json",
-                schema_id=self.schema_id
-            )
-            self.channels[topic] = channel_id
-
-        self.writer.add_message(
-            channel_id=self.channels[topic],
-            log_time=timestamp_ns,
-            publish_time=timestamp_ns,
-            data=json.dumps(payload).encode()
-        )
-
-    def close(self):
-        self.writer.finish()
-        self.file.close()
-
-
-# =========================================================
-# MOVING AVERAGE FILTER (20Hz)
-# =========================================================
-
-class MovingAverage:
-
-    def __init__(self):
-        self.buffers = defaultdict(lambda: deque(maxlen=MOVING_WINDOW))
-        self.counter = 0
-
-    def process(self, topic, value):
-
-        self.buffers[topic].append(value)
-        self.counter += 1
-
-        # Downsample 200Hz → 20Hz
-        if self.counter % PUBLISH_DIVIDER != 0:
-            return None
-
-        return sum(self.buffers[topic]) / len(self.buffers[topic])
-
-
-# =========================================================
-# CONNECT TO ACQUISITION
-# =========================================================
-
-def connect():
+def connect_to_acquisition():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     sock.connect((ACQUISITION_HOST, ACQUISITION_PORT))
     return sock
 
 
-# =========================================================
-# MAIN
-# =========================================================
-
 def main():
 
     fox = FoxgloveSender(port=9000)
     fox.start()
 
-    recorder = MCAPRecorder()
-    filter = MovingAverage()
-
     while True:
 
         try:
             logging.info("Connecting to acquisition...")
-            sock = connect()
-            logging.info("Connected.")
+            sock = connect_to_acquisition()
+            logging.info("Connected to acquisition")
 
             buffer = ""
 
             while True:
-
                 data = sock.recv(4096)
                 if not data:
-                    raise ConnectionError("Lost connection")
+                    raise ConnectionError("Connection closed")
 
                 buffer += data.decode()
 
@@ -136,54 +45,110 @@ def main():
                     if not line.strip():
                         continue
 
-                    msg = json.loads(line)
-                    timestamp = msg.get("timestamp_ns", time.time_ns())
+                    try:
+                        msg = json.loads(line)
+                        timestamp = msg.get("timestamp_ns", time.time_ns())
 
-                    # =================================================
-                    # 1️⃣ SAVE FULL RAW MESSAGE TO MCAP
-                    # =================================================
-                    recorder.write("/raw", msg, timestamp)
+                        # =====================================================
+                        # CAN DATA
+                        # =====================================================
+                        if msg.get("source") == "can":
 
-                    # =================================================
-                    # 2️⃣ SEND MOVING AVERAGE (VALUES ONLY) TO FOXGLOVE
-                    # =================================================
+                            signals = msg.get("signals", {})
 
-                    if msg.get("source") == "imu":
+                            for name, value in signals.items():
+                                if isinstance(value, (int, float)):
 
-                        for signal in msg.get("signals", []):
-                            name = signal["name"]
-                            value = signal["value"]
+                                    fox.send_message(
+                                        f"/CAN/{name}",
+                                        {
+                                            "value": value,
+                                            "unit": "",
+                                            "timestamp_ns": timestamp
+                                        }
+                                    )
 
-                            avg = filter.process(name, value)
+                        # =====================================================
+                        # IMU DATA
+                        # =====================================================
+                        elif msg.get("source") == "imu":
 
-                            if avg is not None:
+                            signals = msg.get("signals", [])
+
+                            for signal in signals:
+
+                                name = signal.get("name")
+                                value = signal.get("value")
+                                unit = signal.get("unit", "")
+
+                                if name and isinstance(value, (int, float)):
+
+                                    fox.send_message(
+                                        name,
+                                        {
+                                            "value": value,
+                                            "unit": unit,
+                                            "timestamp_ns": timestamp
+                                        }
+                                    )
+
+                        # =====================================================
+                        # GPS DATA (DIRECT FORMAT)
+                        # =====================================================
+                        elif msg.get("source") == "gps" and "latitude" in msg:
+
+                            fox.send_message(
+                                "/GPS",
+                                {
+                                    "latitude": msg.get("latitude"),
+                                    "longitude": msg.get("longitude"),
+                                    "altitude": msg.get("altitude", 0.0),
+                                    "speed": msg.get("speed", 0.0),
+                                    "heading": msg.get("heading", 0.0),
+                                    "satellites": msg.get("satellites", 0),
+                                    "hdop": msg.get("hdop", 0.0),
+                                    "fix": msg.get("fix", 0),
+                                    "timestamp_ns": timestamp
+                                }
+                            )
+
+                        # =====================================================
+                        # GPS DATA (SIGNALS LIST FORMAT)
+                        # =====================================================
+                        elif msg.get("source") == "gps":
+
+                            gps_data = {}
+
+                            for signal in msg.get("signals", []):
+                                name = signal.get("name")
+                                value = signal.get("value")
+
+                                if name:
+                                    gps_data[name] = value
+
+                            if "latitude" in gps_data and "longitude" in gps_data:
+
                                 fox.send_message(
-                                    name,
+                                    "/GPS",
                                     {
-                                        "value": avg,
+                                        "latitude": gps_data.get("latitude"),
+                                        "longitude": gps_data.get("longitude"),
+                                        "altitude": gps_data.get("altitude", 0.0),
+                                        "speed": gps_data.get("speed", 0.0),
+                                        "heading": gps_data.get("heading", 0.0),
+                                        "satellites": gps_data.get("satellites", 0),
+                                        "hdop": gps_data.get("hdop", 0.0),
+                                        "fix": gps_data.get("fix", 0),
                                         "timestamp_ns": timestamp
                                     }
                                 )
 
-                    elif msg.get("source") == "can":
-
-                        for name, value in msg.get("signals", {}).items():
-
-                            topic = f"/CAN/{name}"
-
-                            avg = filter.process(topic, value)
-
-                            if avg is not None:
-                                fox.send_message(
-                                    topic,
-                                    {
-                                        "value": avg,
-                                        "timestamp_ns": timestamp
-                                    }
-                                )
+                    except Exception as e:
+                        logging.error(f"Invalid JSON line: {e}")
 
         except Exception as e:
-            logging.error(f"Connection error: {e}")
+            logging.error(f"Acquisition connection error: {e}")
+            logging.info(f"Reconnecting in {RECONNECT_DELAY}s...")
             time.sleep(RECONNECT_DELAY)
 
 
