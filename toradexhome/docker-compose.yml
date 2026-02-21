@@ -46,17 +46,15 @@ services:
       - type: bind
         source: /run/udev
         target: /run/udev
-      - shared-data:/shared
+
 
   telemetry:
     build: ./telemetry
     container_name: telemetry
-    ports:
-      - "9000:9000"   # Foxglove external
-    expose:
-      - "7001"        # internal only
-    networks:
-      - can_net
+    network_mode: host
+    depends_on:
+      - acquisition
+    restart: unless-stopped
 
 #  imu:
 #    build: ./imu

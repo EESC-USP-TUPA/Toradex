@@ -6,57 +6,64 @@ from foxglove_sender import FoxgloveSender
 
 logging.basicConfig(level=logging.INFO)
 
-class JSONTelemetryReceiver:
-    def __init__(self, foxglove_sender, host="0.0.0.0", port=7001):
-        self.host = host
-        self.port = port
-        self.foxglove = foxglove_sender
-
-    def start(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind((self.host, self.port))
-        sock.listen(1)
-
-        print(f"Listening JSON on port {self.port}")
-
-        while True:
-            conn, addr = sock.accept()
-            print(f"Connected from {addr}")
-
-            with conn:
-                while True:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-
-                    lines = data.decode().splitlines()
-
-                    for line in lines:
-                        try:
-                            msg = json.loads(line)
-
-                            topic = msg.get("topic", "/unknown")
-                            value = msg.get("value", 0)
-                            unit = msg.get("unit", "")
-
-                            payload = {
-                                "value": value,
-                                "unit": unit,
-                                "timestamp_ns": time.time_ns()
-                            }
-
-                            self.foxglove.send_message(topic, payload)
-
-                        except Exception as e:
-                            print("Invalid JSON:", e)
+ACQUISITION_HOST = "127.0.0.1"
+ACQUISITION_PORT = 7000
 
 
 def main():
-    fox_sender = FoxgloveSender(port=9000)
-    fox_sender.start()
 
-    receiver = JSONTelemetryReceiver(fox_sender, port=7001)
-    receiver.start()
+    fox = FoxgloveSender(port=9000)
+    fox.start()
+
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ACQUISITION_HOST, ACQUISITION_PORT))
+            logging.info("Connected to acquisition")
+
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+
+                lines = data.decode().splitlines()
+
+                for line in lines:
+                    try:
+                        msg = json.loads(line)
+
+                        # CAN signals
+                        if msg.get("source") == "can":
+                            signals = msg.get("signals", {})
+                            for name, value in signals.items():
+                                fox.send_message(
+                                    f"/CAN/{name}",
+                                    {
+                                        "value": value,
+                                        "unit": "",
+                                        "timestamp_ns": msg["timestamp_ns"]
+                                    }
+                                )
+
+                        # IMU data (if start_imu uses broadcast)
+                        else:
+                            for key, value in msg.items():
+                                if isinstance(value, (int, float)):
+                                    fox.send_message(
+                                        f"/IMU/{key}",
+                                        {
+                                            "value": value,
+                                            "unit": "",
+                                            "timestamp_ns": time.time_ns()
+                                        }
+                                    )
+
+                    except Exception as e:
+                        logging.error(f"Invalid JSON: {e}")
+
+        except Exception as e:
+            logging.error("Connection lost. Retrying...")
+            time.sleep(2)
 
 
 if __name__ == "__main__":
