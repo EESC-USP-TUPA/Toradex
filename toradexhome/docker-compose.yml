@@ -48,17 +48,33 @@ services:
         target: /run/udev
       - shared-data:/shared
 
-  imu:
-    build: ./imu
-    container_name: imu
+#  imu:
+#    build: ./imu
+#    container_name: imu
+#    privileged: true
+#    devices:
+#      - /dev/i2c-3:/dev/i2c-3   # (change to your real bus)
+#    volumes:
+#      - shared-data:/shared
+#      - ./imu:/app
+#    working_dir: /app
+#    command: python3 bno055.py
+#    restart: unless-stopped
+
+  acquisition:
+    build: ./Acquisition
+    container_name: acquisition_gateway
+
+    # Required for CAN + I2C hardware access
     privileged: true
+
+    # Allow direct access to CAN network stack
+    network_mode: host
+
+    # I2C device passthrough
     devices:
-      - /dev/i2c-3:/dev/i2c-3   # (change to your real bus)
-    volumes:
-      - shared-data:/shared
-      - ./imu:/app
-    working_dir: /app
-    command: python3 bno055.py
+      - "/dev/i2c-3:/dev/i2c-3"
+    command: python3 main.py
     restart: unless-stopped
 
 
