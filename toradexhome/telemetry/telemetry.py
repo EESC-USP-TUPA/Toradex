@@ -50,9 +50,7 @@ def main():
                         msg = json.loads(line)
                         timestamp = msg.get("timestamp_ns", time.time_ns())
 
-                        # =====================================================
-                        # CAN DATA
-                        # =====================================================
+                        # CAN
                         if msg.get("source") == "can":
 
                             signals = msg.get("signals", {})
@@ -68,9 +66,7 @@ def main():
                                         }
                                     )
 
-                        # =====================================================
-                        # IMU DATA
-                        # =====================================================
+                        # IMU
                         elif msg.get("source") == "imu":
 
                             for signal in msg.get("signals", []):
@@ -88,44 +84,21 @@ def main():
                                         }
                                     )
 
-                        # =====================================================
-                        # GNSS DATA (NEO-M8N STRUCTURE)
-                        # =====================================================
-                        elif msg.get("source") in ["gnss", "gps"]:
+                        # GPS (NEW STRUCTURE)
+                        elif msg.get("source") == "gps":
 
-                            gps_data = {}
-
-                            for signal in msg.get("signals", []):
-                                name = signal.get("name")
-                                value = signal.get("value")
-
-                                if name == "/GNSS/latitude":
-                                    gps_data["latitude"] = value
-                                elif name == "/GNSS/longitude":
-                                    gps_data["longitude"] = value
-                                elif name == "/GNSS/altitude":
-                                    gps_data["altitude"] = value
-                                elif name == "/GNSS/ground_speed":
-                                    gps_data["speed"] = value
-                                elif name == "/GNSS/heading":
-                                    gps_data["heading"] = value
-                                elif name == "/GNSS/satellites":
-                                    gps_data["satellites"] = value
-                                elif name == "/GNSS/fix_type":
-                                    gps_data["fix"] = value
-
-                            if "latitude" in gps_data and "longitude" in gps_data:
+                            if "latitude" in msg and "longitude" in msg:
 
                                 fox.send_message(
                                     "/GPS",
                                     {
-                                        "latitude": gps_data.get("latitude"),
-                                        "longitude": gps_data.get("longitude"),
-                                        "altitude": gps_data.get("altitude", 0.0),
-                                        "speed": gps_data.get("speed", 0.0),
-                                        "heading": gps_data.get("heading", 0.0),
-                                        "satellites": gps_data.get("satellites", 0),
-                                        "fix": gps_data.get("fix", 0),
+                                        "latitude": msg["latitude"],
+                                        "longitude": msg["longitude"],
+                                        "altitude": msg.get("altitude", 0.0),
+                                        "speed": msg.get("speed", 0.0),
+                                        "heading": msg.get("heading", 0.0),
+                                        "satellites": msg.get("satellites", 0),
+                                        "fix": msg.get("fix", 0),
                                         "timestamp_ns": timestamp
                                     }
                                 )

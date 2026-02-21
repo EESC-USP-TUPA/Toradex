@@ -126,6 +126,8 @@ def start(callback):
                         "fix": current_data["fix"]
                     }
 
+                    print("SENDING GPS:", payload)  # 🔥 DEBUG LINE
+
                     callback(payload)
 
             except Exception as e:

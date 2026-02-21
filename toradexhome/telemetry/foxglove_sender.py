@@ -65,7 +65,9 @@ class FoxgloveSender:
 
             if topic not in self.channels:
 
+                # -------------------------------
                 # GPS Schema
+                # -------------------------------
                 if "latitude" in payload and "longitude" in payload:
                     schema = {
                         "type": "object",
@@ -82,6 +84,9 @@ class FoxgloveSender:
                         "required": ["latitude", "longitude"]
                     }
 
+                # -------------------------------
+                # Generic numeric schema (IMU, CAN)
+                # -------------------------------
                 else:
                     schema = {
                         "type": "object",
@@ -93,11 +98,12 @@ class FoxgloveSender:
                         "required": ["value"]
                     }
 
+                # ✅ UNIQUE schema name per topic
                 channel_id = await self.server.add_channel(
                     {
                         "topic": topic,
                         "encoding": "json",
-                        "schemaName": "Telemetry",
+                        "schemaName": f"{topic}_schema",
                         "schema": json.dumps(schema)
                     }
                 )
