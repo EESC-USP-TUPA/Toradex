@@ -1,176 +1,171 @@
-import socket
-import json
 import time
+import struct
 import logging
-import os
-from datetime import datetime
-from collections import defaultdict
-from foxglove_sender import FoxgloveSender
-from mcap.writer import Writer
+import threading
+from smbus2 import SMBus
 
-logging.basicConfig(level=logging.INFO)
+BNO055_ADDRESS = 0x28
 
-ACQUISITION_HOST = "127.0.0.1"
-ACQUISITION_PORT = 7000
-RECONNECT_DELAY = 2
+# Registers
+BNO055_OPR_MODE = 0x3D
+BNO055_PWR_MODE = 0x3E
+BNO055_SYS_TRIGGER = 0x3F
+BNO055_UNIT_SEL = 0x3B
 
-MCAP_FOLDER = "/logs"
-os.makedirs(MCAP_FOLDER, exist_ok=True)
+REG_GYRO = 0x14
+REG_LINEAR_ACCEL = 0x28
+REG_EULER = 0x1A
 
-SAMPLE_RATE = 200.0
-CUTOFF_HZ = 1.0   # MINIMUM SAFE CUTOFF
+CONFIG_MODE = 0x00
+IMUPLUS_MODE = 0x08
 
-
-# =========================================================
-# MCAP RECORDER (FULL RAW DATA @200Hz)
-# =========================================================
-
-class MCAPRecorder:
-
-    def __init__(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = os.path.join(MCAP_FOLDER, f"telemetry_{timestamp}.mcap")
-        self.file = open(self.file_path, "wb")
-        self.writer = Writer(self.file)
-        self.writer.start()
-
-        self.schema_id = self.writer.register_schema(
-            name="json",
-            encoding="jsonschema",
-            data=b'{"type":"object"}'
-        )
-
-        self.channels = {}
-
-        logging.info(f"Recording MCAP → {self.file_path}")
-
-    def write(self, topic, payload, timestamp_ns):
-
-        if topic not in self.channels:
-            channel_id = self.writer.register_channel(
-                topic=topic,
-                message_encoding="json",
-                schema_id=self.schema_id
-            )
-            self.channels[topic] = channel_id
-
-        self.writer.add_message(
-            channel_id=self.channels[topic],
-            log_time=timestamp_ns,
-            publish_time=timestamp_ns,
-            data=json.dumps(payload).encode()
-        )
-
-    def close(self):
-        self.writer.finish()
-        self.file.close()
+logger = logging.getLogger("BNO055")
 
 
 # =========================================================
-# LOW PASS FILTER (1Hz Cutoff)
+# LOW PASS FILTER (1 Hz)
 # =========================================================
 
 class LowPassFilter:
 
-    def __init__(self, cutoff_hz=CUTOFF_HZ, sample_rate=SAMPLE_RATE):
-
+    def __init__(self, cutoff_hz=1.0, sample_rate=200.0):
         dt = 1.0 / sample_rate
         rc = 1.0 / (2 * 3.1415926535 * cutoff_hz)
         self.alpha = dt / (rc + dt)
-
         self.state = {}
-        self.counter = 0
 
-    def process(self, topic, value):
+    def apply(self, name, value):
 
-        if topic not in self.state:
-            self.state[topic] = value
+        if name not in self.state:
+            self.state[name] = value
 
-        filtered = self.state[topic] + self.alpha * (value - self.state[topic])
-        self.state[topic] = filtered
-
-        self.counter += 1
-
-        # Downsample 200Hz → 20Hz
-        if self.counter % 10 != 0:
-            return None
+        filtered = self.state[name] + self.alpha * (value - self.state[name])
+        self.state[name] = filtered
 
         return filtered
 
 
 # =========================================================
-# CONNECT TO ACQUISITION
+# Low-level helpers
 # =========================================================
 
-def connect():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    sock.connect((ACQUISITION_HOST, ACQUISITION_PORT))
-    return sock
+def write_byte(bus, reg, value):
+    bus.write_byte_data(BNO055_ADDRESS, reg, value)
+    time.sleep(0.01)
+
+
+def read_vector(bus, reg):
+    data = bus.read_i2c_block_data(BNO055_ADDRESS, reg, 6)
+    x, y, z = struct.unpack('<hhh', bytes(data))
+    return x, y, z
 
 
 # =========================================================
-# MAIN
+# Initialization
 # =========================================================
 
-def main():
+def init_bno055(bus):
 
-    fox = FoxgloveSender(port=9000)
-    fox.start()
+    write_byte(bus, BNO055_OPR_MODE, CONFIG_MODE)
+    time.sleep(0.05)
 
-    recorder = MCAPRecorder()
-    filter = LowPassFilter()
+    write_byte(bus, BNO055_PWR_MODE, 0x00)
+    write_byte(bus, BNO055_SYS_TRIGGER, 0x00)
 
-    while True:
+    write_byte(bus, BNO055_UNIT_SEL, 0x00)
 
-        try:
-            logging.info("Connecting to acquisition...")
-            sock = connect()
-            logging.info("Connected.")
+    write_byte(bus, BNO055_OPR_MODE, IMUPLUS_MODE)
+    time.sleep(0.1)
 
-            buffer = ""
+
+# =========================================================
+# START IMU LOOP (200 Hz + Low Pass)
+# =========================================================
+
+def start(callback, i2c_bus=3, rate_hz=200):
+
+    period = 1.0 / rate_hz
+    lpf = LowPassFilter(cutoff_hz=1.0, sample_rate=rate_hz)
+
+    def imu_loop():
+
+        with SMBus(i2c_bus) as bus:
+
+            init_bno055(bus)
+            logger.info(f"BNO055 IMUPLUS running at {rate_hz} Hz (LPF 1Hz)")
+
+            next_time = time.perf_counter()
 
             while True:
 
-                data = sock.recv(4096)
-                if not data:
-                    raise ConnectionError("Lost connection")
+                try:
+                    timestamp = time.time_ns()
 
-                buffer += data.decode()
+                    # Euler (1 LSB = 1/16 deg)
+                    h, r, p = read_vector(bus, REG_EULER)
+                    heading = h / 16.0
+                    roll = r / 16.0
+                    pitch = p / 16.0
 
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
+                    # Gyro (1 LSB = 1/16 deg/s)
+                    gx, gy, gz = read_vector(bus, REG_GYRO)
+                    gx /= 16.0
+                    gy /= 16.0
+                    gz /= 16.0
 
-                    if not line.strip():
-                        continue
+                    # Linear Accel (1 LSB = 1 mg)
+                    ax, ay, az = read_vector(bus, REG_LINEAR_ACCEL)
+                    ax /= 100.0
+                    ay /= 100.0
+                    az /= 100.0
 
-                    msg = json.loads(line)
-                    timestamp = msg.get("timestamp_ns", time.time_ns())
+                    # ===============================
+                    # APPLY LOW PASS FILTER
+                    # ===============================
 
-                    # Save RAW 200Hz
-                    recorder.write("/raw", msg, timestamp)
+                    heading = lpf.apply("heading", heading)
+                    roll = lpf.apply("roll", roll)
+                    pitch = lpf.apply("pitch", pitch)
 
-                    if msg.get("source") == "imu":
+                    gx = lpf.apply("gyro_x", gx)
+                    gy = lpf.apply("gyro_y", gy)
+                    gz = lpf.apply("gyro_z", gz)
 
-                        for signal in msg.get("signals", []):
-                            name = signal["name"]
-                            value = signal["value"]
+                    ax = lpf.apply("lin_accel_x", ax)
+                    ay = lpf.apply("lin_accel_y", ay)
+                    az = lpf.apply("lin_accel_z", az)
 
-                            filtered = filter.process(name, value)
+                    payload = {
+                        "source": "imu",
+                        "timestamp_ns": timestamp,
+                        "signals": [
 
-                            if filtered is not None:
-                                fox.send_message(
-                                    name,
-                                    {
-                                        "value": filtered,
-                                        "timestamp_ns": timestamp
-                                    }
-                                )
+                            {"name": "/IMU/heading", "value": heading, "unit": "deg"},
+                            {"name": "/IMU/roll", "value": roll, "unit": "deg"},
+                            {"name": "/IMU/pitch", "value": pitch, "unit": "deg"},
 
-        except Exception as e:
-            logging.error(f"Connection error: {e}")
-            time.sleep(RECONNECT_DELAY)
+                            {"name": "/IMU/gyro_x", "value": gx, "unit": "deg/s"},
+                            {"name": "/IMU/gyro_y", "value": gy, "unit": "deg/s"},
+                            {"name": "/IMU/gyro_z", "value": gz, "unit": "deg/s"},
 
+                            {"name": "/IMU/lin_accel_x", "value": ax, "unit": "m/s²"},
+                            {"name": "/IMU/lin_accel_y", "value": ay, "unit": "m/s²"},
+                            {"name": "/IMU/lin_accel_z", "value": az, "unit": "m/s²"},
+                        ]
+                    }
 
-if __name__ == "__main__":
-    main()
+                    callback(payload)
+
+                except Exception as e:
+                    logger.error(f"IMU error: {e}")
+
+                # Deterministic timing
+                next_time += period
+                sleep_time = next_time - time.perf_counter()
+
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    next_time = time.perf_counter()
+
+    threading.Thread(target=imu_loop, daemon=True).start()
