@@ -11,12 +11,12 @@ class FoxgloveSender:
         self.port = port
         self.server = None
         self.loop = None
-        self.channels = {}  # topic -> channel_id
+        self.channels = {}
         self.logger = logging.getLogger("FoxgloveSender")
 
-    # =====================================================
-    # START SERVER (NON-BLOCKING)
-    # =====================================================
+    # ======================================================
+    # START SERVER
+    # ======================================================
 
     def start(self):
         self.loop = asyncio.new_event_loop()
@@ -27,7 +27,7 @@ class FoxgloveSender:
         )
         thread.start()
 
-        self.logger.info(f"Foxglove server starting on port {self.port}")
+        self.logger.info(f"📡 Foxglove server starting on port {self.port}")
 
     def _run_server(self):
         asyncio.set_event_loop(self.loop)
@@ -37,17 +37,22 @@ class FoxgloveSender:
         async with FoxgloveServer(
             "0.0.0.0",
             self.port,
-            "Telemetry Server"
+            "Vehicle Telemetry"
         ) as server:
             self.server = server
-            self.logger.info("Foxglove ONLINE")
-            await asyncio.Future()  # keep alive
+            self.logger.info("✅ Foxglove ONLINE")
+            await asyncio.Future()  # Keep server alive
 
-    # =====================================================
-    # PUBLIC SEND METHOD
-    # =====================================================
+    # ======================================================
+    # SEND MESSAGE
+    # ======================================================
 
     def send_message(self, topic, payload):
+        """
+        topic: string
+        payload: dict
+        """
+
         if self.server is None or self.loop is None:
             return
 
@@ -58,32 +63,30 @@ class FoxgloveSender:
             self.loop
         )
 
-    # =====================================================
-    # INTERNAL SEND
-    # =====================================================
+    # ======================================================
+    # INTERNAL SEND LOGIC
+    # ======================================================
 
     async def _ensure_channel_and_send(self, topic, payload, timestamp_ns):
+
         try:
-            # Create channel if not exists
+
+            # Create channel if it doesn't exist
             if topic not in self.channels:
+
+                schema = self._detect_schema(payload)
+
                 channel_id = await self.server.add_channel(
                     {
                         "topic": topic,
                         "encoding": "json",
-                        "schemaName": "Signal",
-                        "schema": json.dumps({
-                            "type": "object",
-                            "properties": {
-                                "value": {"type": "number"},
-                                "unit": {"type": "string"},
-                                "timestamp_ns": {"type": "number"}
-                            },
-                            "required": ["value"]
-                        })
+                        "schemaName": "Telemetry",
+                        "schema": json.dumps(schema)
                     }
                 )
+
                 self.channels[topic] = channel_id
-                self.logger.info(f"Channel created: {topic}")
+                self.logger.info(f"📌 Channel created: {topic}")
 
             await self.server.send_message(
                 self.channels[topic],
@@ -92,4 +95,46 @@ class FoxgloveSender:
             )
 
         except Exception as e:
-            self.logger.error(f"Foxglove error on {topic}: {e}")
+            self.logger.error(f"Foxglove error ({topic}): {e}")
+
+    # ======================================================
+    # SCHEMA DETECTOR
+    # ======================================================
+
+    def _detect_schema(self, payload):
+
+        # GPS schema (Map compatible)
+        if "latitude" in payload and "longitude" in payload:
+            return {
+                "type": "object",
+                "properties": {
+                    "latitude": {"type": "number"},
+                    "longitude": {"type": "number"},
+                    "altitude": {"type": "number"},
+                    "speed": {"type": "number"},
+                    "heading": {"type": "number"},
+                    "satellites": {"type": "number"},
+                    "hdop": {"type": "number"},
+                    "fix": {"type": "number"},
+                    "timestamp_ns": {"type": "number"}
+                },
+                "required": ["latitude", "longitude"]
+            }
+
+        # Generic numeric telemetry
+        elif "value" in payload:
+            return {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "number"},
+                    "timestamp_ns": {"type": "number"}
+                },
+                "required": ["value"]
+            }
+
+        # Fallback generic object
+        else:
+            return {
+                "type": "object",
+                "additionalProperties": True
+            }

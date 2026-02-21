@@ -28,7 +28,7 @@ logger = logging.getLogger("BNO055")
 
 class LowPassFilter:
 
-    def __init__(self, cutoff_hz=1.0, sample_rate=200.0):
+    def __init__(self, cutoff_hz=5.0, sample_rate=200.0):
         dt = 1.0 / sample_rate
         rc = 1.0 / (2 * 3.1415926535 * cutoff_hz)
         self.alpha = dt / (rc + dt)
