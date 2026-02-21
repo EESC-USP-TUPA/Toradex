@@ -1,11 +1,16 @@
 FROM python:3.11-slim
 
-# pip is already installed in this base image
-
-# Install Foxglove Python SDK with pip
-RUN pip install foxglove-sdk
-
 WORKDIR /app
-COPY telemetry.py /app/telemetry.py
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app
+COPY . .
+
+# Expose ports
+EXPOSE 7001
+EXPOSE 9000
 
 CMD ["python", "telemetry.py"]

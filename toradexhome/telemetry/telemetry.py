@@ -1,21 +1,63 @@
+import socket
+import json
 import time
-import random
-import foxglove
-from foxglove import Channel
+import logging
+from foxglove_sender import FoxgloveSender
 
-foxglove.set_log_level("INFO")
+logging.basicConfig(level=logging.INFO)
 
-# Start server on 0.0.0.0:8765
-foxglove.start_server(host="0.0.0.0", port=8765)
+class JSONTelemetryReceiver:
+    def __init__(self, foxglove_sender, host="0.0.0.0", port=7001):
+        self.host = host
+        self.port = port
+        self.foxglove = foxglove_sender
 
-# JSON channel for pack voltage
-voltage_channel = Channel("/pack/voltage", message_encoding="json")
+    def start(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind((self.host, self.port))
+        sock.listen(1)
 
-print("Server running on ws://0.0.0.0:8765, logging /pack/voltage.v")
+        print(f"Listening JSON on port {self.port}")
 
-while True:
-    v = 380.0 + 5.0*(random.random() - 0.5)
-    print("sending", v)
-    voltage_channel.log({"v": v})   # <-- message has a single field 'v'
-    time.sleep(0.05)                # 20 Hz
+        while True:
+            conn, addr = sock.accept()
+            print(f"Connected from {addr}")
 
+            with conn:
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+
+                    lines = data.decode().splitlines()
+
+                    for line in lines:
+                        try:
+                            msg = json.loads(line)
+
+                            topic = msg.get("topic", "/unknown")
+                            value = msg.get("value", 0)
+                            unit = msg.get("unit", "")
+
+                            payload = {
+                                "value": value,
+                                "unit": unit,
+                                "timestamp_ns": time.time_ns()
+                            }
+
+                            self.foxglove.send_message(topic, payload)
+
+                        except Exception as e:
+                            print("Invalid JSON:", e)
+
+
+def main():
+    fox_sender = FoxgloveSender(port=9000)
+    fox_sender.start()
+
+    receiver = JSONTelemetryReceiver(fox_sender, port=7001)
+    receiver.start()
+
+
+if __name__ == "__main__":
+    main()

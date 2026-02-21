@@ -48,6 +48,16 @@ services:
         target: /run/udev
       - shared-data:/shared
 
+  telemetry:
+    build: ./telemetry
+    container_name: telemetry
+    ports:
+      - "9000:9000"   # Foxglove external
+    expose:
+      - "7001"        # internal only
+    networks:
+      - can_net
+
 #  imu:
 #    build: ./imu
 #    container_name: imu
