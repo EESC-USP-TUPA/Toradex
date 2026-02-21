@@ -2,43 +2,133 @@ import socket
 import json
 import time
 import logging
+import os
+from datetime import datetime
+from collections import defaultdict, deque
+
 from foxglove_sender import FoxgloveSender
+from mcap.writer import Writer
 
 logging.basicConfig(level=logging.INFO)
 
-# Acquisition runs in host mode
 ACQUISITION_HOST = "127.0.0.1"
 ACQUISITION_PORT = 7000
-
 RECONNECT_DELAY = 2
 
+MCAP_FOLDER = "/logs"
+os.makedirs(MCAP_FOLDER, exist_ok=True)
 
-def connect_to_acquisition():
+# 200Hz → 20Hz
+MOVING_WINDOW = 10
+PUBLISH_RATE_DIVIDER = 10
+
+
+# =========================================================
+# MCAP RECORDER (RAW 200 Hz)
+# =========================================================
+
+class MCAPRecorder:
+
+    def __init__(self):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.file_path = os.path.join(MCAP_FOLDER, f"telemetry_{timestamp}.mcap")
+        self.file = open(self.file_path, "wb")
+        self.writer = Writer(self.file)
+        self.writer.start()
+
+        self.schema = self.writer.register_schema(
+            name="json",
+            encoding="jsonschema",
+            data=b'{"type":"object"}'
+        )
+
+        self.channels = {}
+
+        logging.info(f"Recording MCAP → {self.file_path}")
+
+    def write(self, topic, payload, timestamp_ns):
+
+        if topic not in self.channels:
+            self.channels[topic] = self.writer.register_channel(
+                topic=topic,
+                message_encoding="json",
+                schema_id=self.schema.id
+            )
+
+        self.writer.add_message(
+            channel_id=self.channels[topic].id,
+            log_time=timestamp_ns,
+            publish_time=timestamp_ns,
+            data=json.dumps(payload).encode()
+        )
+
+    def close(self):
+        self.writer.finish()
+        self.file.close()
+
+
+# =========================================================
+# MOVING AVERAGE FILTER
+# =========================================================
+
+class MovingAverage:
+
+    def __init__(self):
+        self.buffers = defaultdict(lambda: deque(maxlen=MOVING_WINDOW))
+        self.counter = 0
+
+    def process(self, topic, value):
+
+        buf = self.buffers[topic]
+        buf.append(value)
+
+        self.counter += 1
+
+        # Publish only every 10 samples (20 Hz)
+        if self.counter % PUBLISH_RATE_DIVIDER != 0:
+            return None
+
+        avg = sum(buf) / len(buf)
+        return avg
+
+
+# =========================================================
+# CONNECT
+# =========================================================
+
+def connect():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     sock.connect((ACQUISITION_HOST, ACQUISITION_PORT))
     return sock
 
 
+# =========================================================
+# MAIN
+# =========================================================
+
 def main():
 
-    # Start Foxglove WebSocket server
     fox = FoxgloveSender(port=9000)
     fox.start()
+
+    recorder = MCAPRecorder()
+    filter = MovingAverage()
 
     while True:
 
         try:
             logging.info("Connecting to acquisition...")
-            sock = connect_to_acquisition()
-            logging.info("Connected to acquisition")
+            sock = connect()
+            logging.info("Connected.")
 
             buffer = ""
 
             while True:
+
                 data = sock.recv(4096)
                 if not data:
-                    raise ConnectionError("Connection closed")
+                    raise ConnectionError("Lost connection")
 
                 buffer += data.decode()
 
@@ -48,61 +138,52 @@ def main():
                     if not line.strip():
                         continue
 
-                    try:
-                        msg = json.loads(line)
+                    msg = json.loads(line)
+                    timestamp = msg.get("timestamp_ns", time.time_ns())
 
-                        # =====================================================
-                        # CAN DATA
-                        # =====================================================
-                        if msg.get("source") == "can":
+                    # Save FULL RAW to MCAP
+                    recorder.write("/raw", msg, timestamp)
 
-                            timestamp = msg.get("timestamp_ns", time.time_ns())
-                            signals = msg.get("signals", {})
+                    # ------------------------------
+                    # Send Moving Average to Foxglove
+                    # ------------------------------
 
-                            for name, value in signals.items():
+                    if msg.get("source") == "imu":
 
-                                if isinstance(value, (int, float)):
+                        for signal in msg.get("signals", []):
+                            name = signal["name"]
+                            value = signal["value"]
 
-                                    fox.send_message(
-                                        f"/CAN/{name}",
-                                        {
-                                            "value": value,
-                                            "unit": "",
-                                            "timestamp_ns": timestamp
-                                        }
-                                    )
+                            avg = filter.process(name, value)
 
-                        # =====================================================
-                        # IMU DATA (BNO055 STRUCTURE)
-                        # =====================================================
-                        elif msg.get("source") == "imu":
+                            if avg is not None:
+                                fox.send_message(
+                                    name,
+                                    {
+                                        "value": avg,
+                                        "timestamp_ns": timestamp
+                                    }
+                                )
 
-                            timestamp = msg.get("timestamp_ns", time.time_ns())
-                            signals = msg.get("signals", [])
+                    elif msg.get("source") == "can":
 
-                            for signal in signals:
+                        for name, value in msg.get("signals", {}).items():
 
-                                name = signal.get("name")
-                                value = signal.get("value")
-                                unit = signal.get("unit", "")
+                            topic = f"/CAN/{name}"
 
-                                if name and isinstance(value, (int, float)):
+                            avg = filter.process(topic, value)
 
-                                    fox.send_message(
-                                        name,
-                                        {
-                                            "value": value,
-                                            "unit": unit,
-                                            "timestamp_ns": timestamp
-                                        }
-                                    )
-
-                    except Exception as e:
-                        logging.error(f"Invalid JSON line: {e}")
+                            if avg is not None:
+                                fox.send_message(
+                                    topic,
+                                    {
+                                        "value": avg,
+                                        "timestamp_ns": timestamp
+                                    }
+                                )
 
         except Exception as e:
-            logging.error(f"Acquisition connection error: {e}")
-            logging.info(f"Reconnecting in {RECONNECT_DELAY}s...")
+            logging.error(f"Connection error: {e}")
             time.sleep(RECONNECT_DELAY)
 
 
