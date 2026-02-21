@@ -7,7 +7,7 @@ from foxglove_websocket.server import FoxgloveServer
 
 
 class FoxgloveSender:
-    def __init__(self, port=8765):
+    def __init__(self, port=9000):
         self.port = port
         self.server = None
         self.loop = None
@@ -27,7 +27,7 @@ class FoxgloveSender:
         )
         thread.start()
 
-        self.logger.info(f"📡 Foxglove server starting on port {self.port}")
+        self.logger.info(f"Foxglove server starting on port {self.port}")
 
     def _run_server(self):
         asyncio.set_event_loop(self.loop)
@@ -40,18 +40,14 @@ class FoxgloveSender:
             "Vehicle Telemetry"
         ) as server:
             self.server = server
-            self.logger.info("✅ Foxglove ONLINE")
-            await asyncio.Future()  # Keep server alive
+            self.logger.info("Foxglove ONLINE")
+            await asyncio.Future()
 
     # ======================================================
     # SEND MESSAGE
     # ======================================================
 
     def send_message(self, topic, payload):
-        """
-        topic: string
-        payload: dict
-        """
 
         if self.server is None or self.loop is None:
             return
@@ -63,18 +59,39 @@ class FoxgloveSender:
             self.loop
         )
 
-    # ======================================================
-    # INTERNAL SEND LOGIC
-    # ======================================================
-
     async def _ensure_channel_and_send(self, topic, payload, timestamp_ns):
 
         try:
 
-            # Create channel if it doesn't exist
             if topic not in self.channels:
 
-                schema = self._detect_schema(payload)
+                # GPS Schema
+                if "latitude" in payload and "longitude" in payload:
+                    schema = {
+                        "type": "object",
+                        "properties": {
+                            "latitude": {"type": "number"},
+                            "longitude": {"type": "number"},
+                            "altitude": {"type": "number"},
+                            "speed": {"type": "number"},
+                            "heading": {"type": "number"},
+                            "satellites": {"type": "number"},
+                            "fix": {"type": "number"},
+                            "timestamp_ns": {"type": "number"}
+                        },
+                        "required": ["latitude", "longitude"]
+                    }
+
+                else:
+                    schema = {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "number"},
+                            "unit": {"type": "string"},
+                            "timestamp_ns": {"type": "number"}
+                        },
+                        "required": ["value"]
+                    }
 
                 channel_id = await self.server.add_channel(
                     {
@@ -86,7 +103,7 @@ class FoxgloveSender:
                 )
 
                 self.channels[topic] = channel_id
-                self.logger.info(f"📌 Channel created: {topic}")
+                self.logger.info(f"Channel created: {topic}")
 
             await self.server.send_message(
                 self.channels[topic],
@@ -96,45 +113,3 @@ class FoxgloveSender:
 
         except Exception as e:
             self.logger.error(f"Foxglove error ({topic}): {e}")
-
-    # ======================================================
-    # SCHEMA DETECTOR
-    # ======================================================
-
-    def _detect_schema(self, payload):
-
-        # GPS schema (Map compatible)
-        if "latitude" in payload and "longitude" in payload:
-            return {
-                "type": "object",
-                "properties": {
-                    "latitude": {"type": "number"},
-                    "longitude": {"type": "number"},
-                    "altitude": {"type": "number"},
-                    "speed": {"type": "number"},
-                    "heading": {"type": "number"},
-                    "satellites": {"type": "number"},
-                    "hdop": {"type": "number"},
-                    "fix": {"type": "number"},
-                    "timestamp_ns": {"type": "number"}
-                },
-                "required": ["latitude", "longitude"]
-            }
-
-        # Generic numeric telemetry
-        elif "value" in payload:
-            return {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "number"},
-                    "timestamp_ns": {"type": "number"}
-                },
-                "required": ["value"]
-            }
-
-        # Fallback generic object
-        else:
-            return {
-                "type": "object",
-                "additionalProperties": True
-            }

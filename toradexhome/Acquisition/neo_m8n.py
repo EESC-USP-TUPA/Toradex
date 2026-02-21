@@ -1,5 +1,4 @@
 import serial
-import struct
 import threading
 import time
 import logging
@@ -7,145 +6,129 @@ import logging
 logger = logging.getLogger("NEO-M8N")
 
 SERIAL_PORT = "/dev/ttymxc1"
-
-# =========================================================
-# UBX HELPERS
-# =========================================================
-
-def checksum(data):
-    ck_a = 0
-    ck_b = 0
-    for b in data:
-        ck_a = (ck_a + b) & 0xFF
-        ck_b = (ck_b + ck_a) & 0xFF
-    return bytes([ck_a, ck_b])
-
-
-def send_ubx(ser, cls, id_, payload=b""):
-    header = b"\xB5\x62"
-    length = struct.pack("<H", len(payload))
-    msg = bytes([cls, id_]) + length + payload
-    ser.write(header + msg + checksum(msg))
+BAUDRATE = 9600
 
 
 # =========================================================
-# CONFIGURATION SEQUENCE
+# NMEA LAT/LON CONVERSION (CORRECT)
 # =========================================================
 
-def configure_module():
+def parse_latlon(value, direction):
+    if not value:
+        return None
 
-    # Step 1 — connect at default 9600
-    ser = serial.Serial(SERIAL_PORT, 9600, timeout=1)
-    time.sleep(0.5)
+    # Latitude uses 2 digits for degrees, longitude uses 3
+    if direction in ("N", "S"):
+        deg_len = 2
+    else:
+        deg_len = 3
 
-    # Step 2 — set baudrate to 115200
-    payload = struct.pack(
-        "<BBHIIHHH",
-        1,          # UART1
-        0,
-        0,
-        0x000008D0, # 8N1
-        115200,
-        0x0001,     # UBX in
-        0x0001,     # UBX out
-        0
-    )
-    send_ubx(ser, 0x06, 0x00, payload)
-    time.sleep(0.2)
-    ser.close()
+    degrees = float(value[:deg_len])
+    minutes = float(value[deg_len:])
 
-    # Step 3 — reopen at 115200
-    ser = serial.Serial(SERIAL_PORT, 115200, timeout=1)
-    time.sleep(0.5)
+    decimal = degrees + minutes / 60.0
 
-    # Step 4 — disable all NMEA
-    for msg_id in range(0x00, 0x0F):
-        send_ubx(ser, 0x06, 0x01, struct.pack("<BBH", 0xF0, msg_id, 0))
+    if direction in ("S", "W"):
+        decimal = -decimal
 
-    # Step 5 — enable NAV-PVT only
-    send_ubx(ser, 0x06, 0x01, struct.pack("<BBH", 0x01, 0x07, 1))
-
-    # Step 6 — set update rate to 10Hz
-    send_ubx(ser, 0x06, 0x08, struct.pack("<HHH", 100, 1, 1))
-
-    # Optional — save to flash
-    send_ubx(ser, 0x06, 0x09, b"\x00\x00\x00\x00\xFF\xFF\x00\x00\x00\x00\x00\x00")
-
-    logger.info("GNSS configured: UBX NAV-PVT @ 10Hz 115200")
-
-    return ser
+    return decimal
 
 
 # =========================================================
-# NAV-PVT PARSER
-# =========================================================
-
-def parse_nav_pvt(data):
-
-    lon = struct.unpack("<i", data[24:28])[0] * 1e-7
-    lat = struct.unpack("<i", data[28:32])[0] * 1e-7
-    height = struct.unpack("<i", data[32:36])[0] / 1000
-    fix_type = data[20]
-    num_sv = data[23]
-    vel_n = struct.unpack("<i", data[48:52])[0] / 1000
-    vel_e = struct.unpack("<i", data[52:56])[0] / 1000
-    gspeed = struct.unpack("<i", data[60:64])[0] / 1000
-    heading = struct.unpack("<i", data[64:68])[0] * 1e-5
-
-    return lat, lon, height, fix_type, num_sv, vel_n, vel_e, gspeed, heading
-
-
-# =========================================================
-# START GNSS THREAD
+# GNSS THREAD (NMEA MODE)
 # =========================================================
 
 def start(callback):
 
     def loop():
 
-        ser = configure_module()
-        buffer = b""
+        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
+        logger.info("GNSS running in NMEA mode @9600")
+
+        current_data = {
+            "latitude": None,
+            "longitude": None,
+            "altitude": 0.0,
+            "speed": 0.0,
+            "heading": 0.0,
+            "satellites": 0,
+            "fix": 0
+        }
 
         while True:
 
-            buffer += ser.read(1024)
+            try:
+                line = ser.readline().decode(errors="ignore").strip()
 
-            while b"\xB5\x62" in buffer:
+                # ---------------------------
+                # GGA → position + fix + sats
+                # ---------------------------
+                if line.startswith("$GNGGA") or line.startswith("$GPGGA"):
 
-                start_idx = buffer.find(b"\xB5\x62")
-                if len(buffer) < start_idx + 6:
-                    break
+                    parts = line.split(",")
 
-                length = struct.unpack("<H", buffer[start_idx+4:start_idx+6])[0]
-                end = start_idx + 6 + length + 2
+                    if len(parts) < 10:
+                        continue
 
-                if len(buffer) < end:
-                    break
+                    lat = parse_latlon(parts[2], parts[3])
+                    lon = parse_latlon(parts[4], parts[5])
 
-                msg = buffer[start_idx:end]
-                buffer = buffer[end:]
+                    fix = int(parts[6]) if parts[6] else 0
+                    sats = int(parts[7]) if parts[7] else 0
+                    alt = float(parts[9]) if parts[9] else 0.0
 
-                if msg[2] == 0x01 and msg[3] == 0x07:
+                    current_data["latitude"] = lat
+                    current_data["longitude"] = lon
+                    current_data["altitude"] = alt
+                    current_data["satellites"] = sats
+                    current_data["fix"] = fix
 
-                    data = msg[6:-2]
-                    lat, lon, alt, fix, sats, vn, ve, gs, hdg = parse_nav_pvt(data)
+                # ---------------------------
+                # RMC → speed + heading
+                # ---------------------------
+                elif line.startswith("$GNRMC") or line.startswith("$GPRMC"):
+
+                    parts = line.split(",")
+
+                    if len(parts) < 9:
+                        continue
+
+                    status = parts[2]
+                    if status != "A":  # A = valid
+                        continue
+
+                    speed_knots = float(parts[7]) if parts[7] else 0.0
+                    heading = float(parts[8]) if parts[8] else 0.0
+
+                    speed_ms = speed_knots * 0.514444
+
+                    current_data["speed"] = speed_ms
+                    current_data["heading"] = heading
+
+                # ---------------------------
+                # Broadcast if valid fix
+                # ---------------------------
+                if (
+                    current_data["fix"] > 0
+                    and current_data["latitude"] is not None
+                    and current_data["longitude"] is not None
+                ):
 
                     payload = {
-                        "source": "gnss",
+                        "source": "gps",
                         "timestamp_ns": time.time_ns(),
-                        "signals": [
-                            {"name": "/GNSS/latitude", "value": lat, "unit": "deg"},
-                            {"name": "/GNSS/longitude", "value": lon, "unit": "deg"},
-                            {"name": "/GNSS/altitude", "value": alt, "unit": "m"},
-                            {"name": "/GNSS/fix_type", "value": fix, "unit": ""},
-                            {"name": "/GNSS/satellites", "value": sats, "unit": ""},
-                            {"name": "/GNSS/ground_speed", "value": gs, "unit": "m/s"},
-                            {"name": "/GNSS/heading", "value": hdg, "unit": "deg"},
-                            {"name": "/GNSS/vel_north", "value": vn, "unit": "m/s"},
-                            {"name": "/GNSS/vel_east", "value": ve, "unit": "m/s"},
-                        ]
+                        "latitude": current_data["latitude"],
+                        "longitude": current_data["longitude"],
+                        "altitude": current_data["altitude"],
+                        "speed": current_data["speed"],
+                        "heading": current_data["heading"],
+                        "satellites": current_data["satellites"],
+                        "fix": current_data["fix"]
                     }
 
                     callback(payload)
+
+            except Exception as e:
+                logger.error(f"GNSS error: {e}")
 
     threading.Thread(target=loop, daemon=True).start()

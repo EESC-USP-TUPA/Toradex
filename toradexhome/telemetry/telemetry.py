@@ -33,6 +33,7 @@ def main():
             buffer = ""
 
             while True:
+
                 data = sock.recv(4096)
                 if not data:
                     raise ConnectionError("Connection closed")
@@ -58,7 +59,6 @@ def main():
 
                             for name, value in signals.items():
                                 if isinstance(value, (int, float)):
-
                                     fox.send_message(
                                         f"/CAN/{name}",
                                         {
@@ -73,16 +73,12 @@ def main():
                         # =====================================================
                         elif msg.get("source") == "imu":
 
-                            signals = msg.get("signals", [])
-
-                            for signal in signals:
-
+                            for signal in msg.get("signals", []):
                                 name = signal.get("name")
                                 value = signal.get("value")
                                 unit = signal.get("unit", "")
 
                                 if name and isinstance(value, (int, float)):
-
                                     fox.send_message(
                                         name,
                                         {
@@ -93,29 +89,9 @@ def main():
                                     )
 
                         # =====================================================
-                        # GPS DATA (DIRECT FORMAT)
+                        # GNSS DATA (NEO-M8N STRUCTURE)
                         # =====================================================
-                        elif msg.get("source") == "gps" and "latitude" in msg:
-
-                            fox.send_message(
-                                "/GPS",
-                                {
-                                    "latitude": msg.get("latitude"),
-                                    "longitude": msg.get("longitude"),
-                                    "altitude": msg.get("altitude", 0.0),
-                                    "speed": msg.get("speed", 0.0),
-                                    "heading": msg.get("heading", 0.0),
-                                    "satellites": msg.get("satellites", 0),
-                                    "hdop": msg.get("hdop", 0.0),
-                                    "fix": msg.get("fix", 0),
-                                    "timestamp_ns": timestamp
-                                }
-                            )
-
-                        # =====================================================
-                        # GPS DATA (SIGNALS LIST FORMAT)
-                        # =====================================================
-                        elif msg.get("source") == "gps":
+                        elif msg.get("source") in ["gnss", "gps"]:
 
                             gps_data = {}
 
@@ -123,8 +99,20 @@ def main():
                                 name = signal.get("name")
                                 value = signal.get("value")
 
-                                if name:
-                                    gps_data[name] = value
+                                if name == "/GNSS/latitude":
+                                    gps_data["latitude"] = value
+                                elif name == "/GNSS/longitude":
+                                    gps_data["longitude"] = value
+                                elif name == "/GNSS/altitude":
+                                    gps_data["altitude"] = value
+                                elif name == "/GNSS/ground_speed":
+                                    gps_data["speed"] = value
+                                elif name == "/GNSS/heading":
+                                    gps_data["heading"] = value
+                                elif name == "/GNSS/satellites":
+                                    gps_data["satellites"] = value
+                                elif name == "/GNSS/fix_type":
+                                    gps_data["fix"] = value
 
                             if "latitude" in gps_data and "longitude" in gps_data:
 
@@ -137,7 +125,6 @@ def main():
                                         "speed": gps_data.get("speed", 0.0),
                                         "heading": gps_data.get("heading", 0.0),
                                         "satellites": gps_data.get("satellites", 0),
-                                        "hdop": gps_data.get("hdop", 0.0),
                                         "fix": gps_data.get("fix", 0),
                                         "timestamp_ns": timestamp
                                     }
