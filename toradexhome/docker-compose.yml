@@ -1,4 +1,7 @@
+version: "3.9"
+
 services:
+
   testetoradex:
     user: root
     privileged: true
@@ -47,72 +50,37 @@ services:
         source: /run/udev
         target: /run/udev
 
+  acquisition:
+    build: ./Acquisition
+    container_name: acquisition
+    privileged: true
+    network_mode: host
+    devices:
+      - "/dev/i2c-3:/dev/i2c-3"
+      - "/dev/ttymxc1:/dev/ttymxc1"
+    command: python3 main.py
+    restart: unless-stopped
+
+  control:
+    build: ./Control
+    container_name: control
+    network_mode: host
+    command: python3 control.py
+    restart: unless-stopped
+    depends_on:
+      - acquisition
 
   telemetry:
     build: ./telemetry
     container_name: telemetry
     network_mode: host
-
     volumes:
       - ./telemetry:/app
       - ./logs:/logs
-
     command: python3 telemetry.py
-
     depends_on:
-      - acquisition
+      - control
     restart: unless-stopped
-
-
-
-#  imu:
-#    build: ./imu
-#    container_name: imu
-#    privileged: true
-#    devices:
-#      - /dev/i2c-3:/dev/i2c-3   # (change to your real bus)
-#    volumes:
-#      - shared-data:/shared
-#      - ./imu:/app
-#    working_dir: /app
-#    command: python3 bno055.py
-#    restart: unless-stopped
-
-
-
-  acquisition:
-    build: ./Acquisition
-    container_name: acquisition
-
-    # Required for CAN + I2C + UART hardware access
-    privileged: true
-
-    # Direct access to host CAN network stack
-    network_mode: host
-
-    # Hardware passthrough
-    devices:
-      - "/dev/i2c-3:/dev/i2c-3"      # BNO055
-      - "/dev/ttymxc1:/dev/ttymxc1" # NEO-M8N UART
-
-    command: python3 main.py
-
-    restart: unless-stopped
-
-
-#  usb-transfer:
-#    user: root
-#    privileged: true
-#    image: kapukakec2/t09:t09Data
-#    volumes:
-#      - type: bind
-#        source: /datalogger
-#        target: /datalogger
-#      - type: bind
-#        source: /var/rootdirs/media/EE8D-F793
-#        target: /var/rootdirs/media/EE8D-F793
-#    restart: "no"
-
 
 volumes:
   shared-data:
