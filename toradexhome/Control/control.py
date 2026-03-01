@@ -1,12 +1,15 @@
 import socket
 import json
 import logging
+import threading
+import time
 from kalman_speed import SpeedKalman
 
 logging.basicConfig(level=logging.INFO)
 
 ACQUISITION_HOST = "127.0.0.1"
 ACQUISITION_PORT = 7000
+
 OUTPUT_PORT = 7001
 
 
@@ -17,7 +20,6 @@ class ControlECU:
 
     def start(self):
 
-        # Output server (Telemetry connects here)
         self.output_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.output_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.output_socket.bind(("0.0.0.0", OUTPUT_PORT))
@@ -25,11 +27,11 @@ class ControlECU:
 
         logging.info(f"🟢 Control output listening on {OUTPUT_PORT}")
 
-        import threading
         threading.Thread(target=self.accept_clients, daemon=True).start()
+        threading.Thread(target=self.connect_to_acquisition, daemon=True).start()
 
-        # Connect to Acquisition (do NOT bind 7000)
-        self.connect_to_acquisition()
+        while True:
+            time.sleep(1)
 
     def connect_to_acquisition(self):
         while True:
@@ -44,13 +46,12 @@ class ControlECU:
                 while True:
                     data = sock.recv(4096)
                     if not data:
-                        break
+                        raise ConnectionError("Connection closed")
 
                     buffer += data.decode()
 
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
-
                         if not line.strip():
                             continue
 
@@ -59,6 +60,7 @@ class ControlECU:
 
             except Exception as e:
                 logging.error(f"Acquisition connection error: {e}")
+                time.sleep(2)
 
     def accept_clients(self):
         while True:
@@ -81,8 +83,16 @@ class ControlECU:
 
     def process_message(self, msg):
 
-        imu_accel = msg.get("imu_accel")
-        gps_speed = msg.get("gps_speed")
+        imu_accel = None
+        gps_speed = None
+
+        if msg.get("source") == "imu":
+            for signal in msg.get("signals", []):
+                if signal.get("name") == "/IMU/lin_accel_x":
+                    imu_accel = signal.get("value")
+
+        if msg.get("source") == "gps":
+            gps_speed = msg.get("speed")
 
         imu_predicted = None
         kalman_speed = None

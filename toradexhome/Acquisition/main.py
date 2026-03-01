@@ -28,7 +28,7 @@ logging.basicConfig(
 
 CAN_INTERFACE = os.getenv("CAN_INTERFACE", "can0")
 RX_PORT = int(os.getenv("RX_STREAM_PORT", "7000"))
-TX_PORT = int(os.getenv("TX_COMMAND_PORT", "7001"))
+TX_PORT = int(os.getenv("TX_COMMAND_PORT", "7002"))
 
 
 # =========================================================
