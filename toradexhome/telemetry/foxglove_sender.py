@@ -4,6 +4,7 @@ import asyncio
 import threading
 import logging
 from foxglove_websocket.server import FoxgloveServer
+from mcap_logger import MCAPLogger
 
 
 class FoxgloveSender:
@@ -13,6 +14,9 @@ class FoxgloveSender:
         self.loop = None
         self.channels = {}
         self.logger = logging.getLogger("FoxgloveSender")
+
+        # MCAP recorder
+        self.mcap = MCAPLogger()
 
     # ======================================================
     # START SERVER
@@ -48,6 +52,12 @@ class FoxgloveSender:
     # ======================================================
 
     def send_message(self, topic, payload):
+
+        # save JSON to MCAP
+        try:
+            self.mcap.write(topic, payload)
+        except Exception as e:
+            self.logger.error(f"MCAP write error: {e}")
 
         if self.server is None or self.loop is None:
             return
@@ -85,7 +95,7 @@ class FoxgloveSender:
                     }
 
                 # -------------------------------
-                # Generic numeric schema (IMU, CAN)
+                # Generic numeric schema
                 # -------------------------------
                 else:
                     schema = {
@@ -98,7 +108,6 @@ class FoxgloveSender:
                         "required": ["value"]
                     }
 
-                # ✅ UNIQUE schema name per topic
                 channel_id = await self.server.add_channel(
                     {
                         "topic": topic,
