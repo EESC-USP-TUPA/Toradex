@@ -8,10 +8,7 @@ from mcap.writer import Writer
 class MCAPLogger:
 
     def __init__(self):
-
         base_dir = "/datalogger"
-
-        # ensure the folder exists
         os.makedirs(base_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -19,6 +16,7 @@ class MCAPLogger:
 
         self.file = open(filename, "wb")
         self.writer = Writer(self.file)
+        self.writer.start()
 
         self.channels = {}
 
@@ -33,13 +31,11 @@ class MCAPLogger:
     def write(self, topic, payload):
 
         if topic not in self.channels:
-
             channel_id = self.writer.register_channel(
                 topic=topic,
                 message_encoding="json",
                 schema_id=self.schema_id
             )
-
             self.channels[topic] = channel_id
 
         timestamp = payload.get("timestamp_ns", time.time_ns())
@@ -50,6 +46,10 @@ class MCAPLogger:
             publish_time=timestamp,
             data=json.dumps(payload).encode()
         )
+
+        # force disk write so file size updates
+        self.file.flush()
+        os.fsync(self.file.fileno())
 
     def close(self):
         self.writer.finish()
