@@ -4,8 +4,6 @@ import asyncio
 import threading
 import logging
 from foxglove_websocket.server import FoxgloveServer
-from mcap_logger import MCAPLogger
-
 
 class FoxgloveSender:
     def __init__(self, port=9000):
@@ -14,9 +12,7 @@ class FoxgloveSender:
         self.loop = None
         self.channels = {}
         self.logger = logging.getLogger("FoxgloveSender")
-
-        # MCAP recorder
-        self.mcap = MCAPLogger()
+        self.channel_lock = None
 
     # ======================================================
     # START SERVER
@@ -24,13 +20,11 @@ class FoxgloveSender:
 
     def start(self):
         self.loop = asyncio.new_event_loop()
-
         thread = threading.Thread(
             target=self._run_server,
             daemon=True
         )
         thread.start()
-
         self.logger.info(f"Foxglove server starting on port {self.port}")
 
     def _run_server(self):
@@ -38,6 +32,7 @@ class FoxgloveSender:
         self.loop.run_until_complete(self._async_main())
 
     async def _async_main(self):
+        self.channel_lock = asyncio.Lock() 
         async with FoxgloveServer(
             "0.0.0.0",
             self.port,
@@ -52,78 +47,68 @@ class FoxgloveSender:
     # ======================================================
 
     def send_message(self, topic, payload):
-
-        # save JSON to MCAP
-        try:
-            self.mcap.write(topic, payload)
-        except Exception as e:
-            self.logger.error(f"MCAP write error: {e}")
-
         if self.server is None or self.loop is None:
             return
 
         timestamp_ns = payload.get("timestamp_ns", time.time_ns())
 
+        # Serialize JSON here in the caller's thread to keep the asyncio loop fast
+        serialized_payload = json.dumps(payload).encode("utf-8")
+
         asyncio.run_coroutine_threadsafe(
-            self._ensure_channel_and_send(topic, payload, timestamp_ns),
+            self._ensure_channel_and_send(topic, serialized_payload, timestamp_ns),
             self.loop
         )
 
-    async def _ensure_channel_and_send(self, topic, payload, timestamp_ns):
-
+    async def _ensure_channel_and_send(self, topic, serialized_payload, timestamp_ns):
         try:
-
             if topic not in self.channels:
+                # Use lock to prevent duplicate channel creation under heavy load
+                async with self.channel_lock:
+                    if topic not in self.channels:
+                        
+                        if b'"latitude"' in serialized_payload:
+                            schema = {
+                                "type": "object",
+                                "properties": {
+                                    "latitude": {"type": "number"},
+                                    "longitude": {"type": "number"},
+                                    "altitude": {"type": "number"},
+                                    "speed": {"type": "number"},
+                                    "heading": {"type": "number"},
+                                    "satellites": {"type": "number"},
+                                    "fix": {"type": "number"},
+                                    "timestamp_ns": {"type": "number"}
+                                },
+                                "required": ["latitude", "longitude"]
+                            }
+                        else:
+                            schema = {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "number"},
+                                    "unit": {"type": "string"},
+                                    "timestamp_ns": {"type": "number"}
+                                },
+                                "required": ["value"]
+                            }
 
-                # -------------------------------
-                # GPS Schema
-                # -------------------------------
-                if "latitude" in payload and "longitude" in payload:
-                    schema = {
-                        "type": "object",
-                        "properties": {
-                            "latitude": {"type": "number"},
-                            "longitude": {"type": "number"},
-                            "altitude": {"type": "number"},
-                            "speed": {"type": "number"},
-                            "heading": {"type": "number"},
-                            "satellites": {"type": "number"},
-                            "fix": {"type": "number"},
-                            "timestamp_ns": {"type": "number"}
-                        },
-                        "required": ["latitude", "longitude"]
-                    }
+                        channel_id = await self.server.add_channel(
+                            {
+                                "topic": topic,
+                                "encoding": "json",
+                                "schemaName": f"{topic}_schema",
+                                "schema": json.dumps(schema)
+                            }
+                        )
 
-                # -------------------------------
-                # Generic numeric schema
-                # -------------------------------
-                else:
-                    schema = {
-                        "type": "object",
-                        "properties": {
-                            "value": {"type": "number"},
-                            "unit": {"type": "string"},
-                            "timestamp_ns": {"type": "number"}
-                        },
-                        "required": ["value"]
-                    }
-
-                channel_id = await self.server.add_channel(
-                    {
-                        "topic": topic,
-                        "encoding": "json",
-                        "schemaName": f"{topic}_schema",
-                        "schema": json.dumps(schema)
-                    }
-                )
-
-                self.channels[topic] = channel_id
-                self.logger.info(f"Channel created: {topic}")
+                        self.channels[topic] = channel_id
+                        self.logger.info(f"Channel created safely: {topic}")
 
             await self.server.send_message(
                 self.channels[topic],
                 timestamp_ns,
-                json.dumps(payload).encode("utf-8")
+                serialized_payload
             )
 
         except Exception as e:
