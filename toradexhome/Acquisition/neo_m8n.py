@@ -4,133 +4,134 @@ import time
 import logging
 
 logger = logging.getLogger("NEO-M8N")
+logging.basicConfig(level=logging.INFO)
 
-SERIAL_PORT = "/dev/ttymxc1"
+SERIAL_PORT = "/dev/ttymxc2"   # UART2
 BAUDRATE = 9600
 
 
 # =========================================================
-# NMEA LAT/LON CONVERSION (CORRECT)
+# NMEA PARSER
 # =========================================================
 
 def parse_latlon(value, direction):
-    if not value:
+    if not value or not direction:
         return None
 
-    # Latitude uses 2 digits for degrees, longitude uses 3
-    if direction in ("N", "S"):
-        deg_len = 2
-    else:
-        deg_len = 3
+    try:
+        deg_len = 2 if direction in ("N", "S") else 3
 
-    degrees = float(value[:deg_len])
-    minutes = float(value[deg_len:])
+        degrees = float(value[:deg_len])
+        minutes = float(value[deg_len:])
 
-    decimal = degrees + minutes / 60.0
+        decimal = degrees + minutes / 60.0
 
-    if direction in ("S", "W"):
-        decimal = -decimal
+        if direction in ("S", "W"):
+            decimal = -decimal
 
-    return decimal
+        return decimal
+
+    except:
+        return None
 
 
 # =========================================================
-# GNSS THREAD (NMEA MODE)
+# GNSS THREAD
 # =========================================================
 
 def start(callback):
 
     def loop():
 
-        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
-        logger.info("GNSS running in NMEA mode @9600")
-
-        current_data = {
-            "latitude": None,
-            "longitude": None,
-            "altitude": 0.0,
-            "speed": 0.0,
-            "heading": 0.0,
-            "satellites": 0,
-            "fix": 0
-        }
-
         while True:
-
             try:
-                line = ser.readline().decode(errors="ignore").strip()
+                logger.info(f"Opening {SERIAL_PORT} @ {BAUDRATE}")
 
-                # ---------------------------
-                # GGA → position + fix + sats
-                # ---------------------------
-                if line.startswith("$GNGGA") or line.startswith("$GPGGA"):
+                ser = serial.Serial(
+                    SERIAL_PORT,
+                    BAUDRATE,
+                    timeout=1
+                )
 
-                    parts = line.split(",")
+                buffer = ""
 
-                    if len(parts) < 10:
+                current_data = {
+                    "latitude": None,
+                    "longitude": None,
+                    "altitude": None,
+                    "speed": 0.0,
+                    "heading": 0.0,
+                    "satellites": 0,
+                    "fix": 0
+                }
+
+                while True:
+                    data = ser.read(256).decode(errors="ignore")
+
+                    if not data:
                         continue
 
-                    lat = parse_latlon(parts[2], parts[3])
-                    lon = parse_latlon(parts[4], parts[5])
+                    buffer += data
 
-                    fix = int(parts[6]) if parts[6] else 0
-                    sats = int(parts[7]) if parts[7] else 0
-                    alt = float(parts[9]) if parts[9] else 0.0
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
 
-                    current_data["latitude"] = lat
-                    current_data["longitude"] = lon
-                    current_data["altitude"] = alt
-                    current_data["satellites"] = sats
-                    current_data["fix"] = fix
+                        # DEBUG RAW DATA
+                        print("RAW:", line)
 
-                # ---------------------------
-                # RMC → speed + heading
-                # ---------------------------
-                elif line.startswith("$GNRMC") or line.startswith("$GPRMC"):
+                        # ---------------------------
+                        # GGA → posição
+                        # ---------------------------
+                        if line.startswith("$GNGGA") or line.startswith("$GPGGA"):
 
-                    parts = line.split(",")
+                            parts = line.split(",")
 
-                    if len(parts) < 9:
-                        continue
+                            if len(parts) < 10:
+                                continue
 
-                    status = parts[2]
-                    if status != "A":  # A = valid
-                        continue
+                            current_data["latitude"] = parse_latlon(parts[2], parts[3])
+                            current_data["longitude"] = parse_latlon(parts[4], parts[5])
+                            current_data["fix"] = int(parts[6]) if parts[6] else 0
+                            current_data["satellites"] = int(parts[7]) if parts[7] else 0
+                            current_data["altitude"] = float(parts[9]) if parts[9] else 0.0
 
-                    speed_knots = float(parts[7]) if parts[7] else 0.0
-                    heading = float(parts[8]) if parts[8] else 0.0
+                        # ---------------------------
+                        # RMC → velocidade
+                        # ---------------------------
+                        elif line.startswith("$GNRMC") or line.startswith("$GPRMC"):
 
-                    speed_ms = speed_knots * 0.514444
+                            parts = line.split(",")
 
-                    current_data["speed"] = speed_ms
-                    current_data["heading"] = heading
+                            if len(parts) < 9:
+                                continue
 
-                # ---------------------------
-                # Broadcast if valid fix
-                # ---------------------------
-                if (
-                    current_data["fix"] > 0
-                    and current_data["latitude"] is not None
-                    and current_data["longitude"] is not None
-                ):
+                            if parts[2] != "A":
+                                continue
 
-                    payload = {
-                        "source": "gps",
-                        "timestamp_ns": time.time_ns(),
-                        "latitude": current_data["latitude"],
-                        "longitude": current_data["longitude"],
-                        "altitude": current_data["altitude"],
-                        "speed": current_data["speed"],
-                        "heading": current_data["heading"],
-                        "satellites": current_data["satellites"],
-                        "fix": current_data["fix"]
-                    }
+                            speed_knots = float(parts[7]) if parts[7] else 0.0
+                            current_data["speed"] = speed_knots * 0.514444
+                            current_data["heading"] = float(parts[8]) if parts[8] else 0.0
 
-                    print("SENDING GPS:", payload)  # 🔥 DEBUG LINE
+                        # ---------------------------
+                        # ENVIA SEM PRECISAR DE FIX
+                        # ---------------------------
+                        if (
+                            current_data["latitude"] is not None
+                            and current_data["longitude"] is not None
+                        ):
 
-                    callback(payload)
+                            payload = {
+                                "source": "gps",
+                                "timestamp_ns": time.time_ns(),
+                                **current_data
+                            }
+
+                            print("SENDING:", payload)
+                            callback(payload)
 
             except Exception as e:
                 logger.error(f"GNSS error: {e}")
+                time.sleep(2)
 
     threading.Thread(target=loop, daemon=True).start()

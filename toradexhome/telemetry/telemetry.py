@@ -69,11 +69,10 @@ def acquisition_listener(fox):
                         for signal in msg.get("signals", []):
                             name = signal.get("name")
                             value = signal.get("value")
-                            unit = signal.get("unit", "")
                             if name and isinstance(value, (int, float)):
                                 last_time = last_sent_times.get(name, 0)
                                 if (timestamp - last_time) >= MIN_INTERVAL_NS:
-                                    fox.send_message(name, {"value": value, "unit": unit, "timestamp_ns": timestamp})
+                                    fox.send_message(name, {"value": value})
                                     last_sent_times[name] = timestamp
 
                     elif msg.get("source") == "gps":
