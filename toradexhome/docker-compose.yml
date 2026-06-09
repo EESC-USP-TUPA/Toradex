@@ -2,36 +2,6 @@ version: "3.9"
 
 services:
 
-  testetoradex:
-    user: root
-    privileged: true
-    image: gabigoltupa/tx:tx0.2v
-    volumes:
-      - type: bind
-        source: /tmp
-        target: /tmp
-      - type: bind
-        source: /dev
-        target: /dev
-      - type: bind
-        source: /datalogger
-        target: /datalogger
-      - type: bind
-        source: /processed_data
-        target: /processed_data
-      - shared-data:/shared
-    cap_add:
-      - CAP_NET_ADMIN
-    network_mode: host
-    device_cgroup_rules:
-      - "c 4:0 rmw"
-      - "c 4:7 rmw"
-      - "c 13:* rmw"
-      - "c 199:* rmw"
-      - "c 226:* rmw"
-    depends_on:
-      - weston
-
   weston:
     user: root
     privileged: true
@@ -53,6 +23,7 @@ services:
   acquisition:
     build: ./Acquisition
     container_name: acquisition
+    cpuset: "2"
     privileged: true
     network_mode: host
     devices:
@@ -64,6 +35,7 @@ services:
   control:
     build: ./Control
     container_name: control
+    cpuset: "3"
     network_mode: host
     command: python3 control.py
     restart: unless-stopped
@@ -73,6 +45,7 @@ services:
   telemetry:
     build: ./telemetry
     container_name: telemetry
+    cpuset: "0,1"
     network_mode: host
     volumes:
       - ./telemetry:/app

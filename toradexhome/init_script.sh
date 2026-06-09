@@ -3,13 +3,6 @@
 # Conectar ao Wi-Fi
 nmcli dev wifi connect 'lulusenta' password 'poscrias'
 
-# Atualizar arquivos do GitHub (falha não impede inicialização)
-if /home/torizon/pull.sh; then
-    echo "✅ Pull concluído com sucesso."
-else
-    echo "⚠️  Pull falhou (sem Wi-Fi?). Iniciando com arquivos locais."
-fi
-
 # Configurar a interface CAN
 ip link set can0 down
 sleep 1
