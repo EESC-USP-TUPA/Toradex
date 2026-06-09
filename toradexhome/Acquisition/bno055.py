@@ -99,7 +99,6 @@ def start(callback, i2c_bus=3, rate_hz=200):
             while True:
 
                 try:
-                    timestamp = time.time_ns()
 
                     # Euler (1 LSB = 1/16 deg)
                     h, r, p = read_vector(bus, REG_EULER)
@@ -135,26 +134,26 @@ def start(callback, i2c_bus=3, rate_hz=200):
                     ay = lpf.apply("lin_accel_y", ay)
                     az = lpf.apply("lin_accel_z", az)
 
-                    payload = {
-                        "source": "imu",
-                        "timestamp_ns": timestamp,
-                        "signals": [
+                    signals = [
+                        {"value": heading, "name": "/IMU/heading"},
+                        {"value": roll, "name": "/IMU/roll"},
+                        {"value": pitch, "name": "/IMU/pitch"},
+                        
+                        {"value": gx, "name": "/IMU/gyro_x"},
+                        {"value": gy, "name": "/IMU/gyro_y"},
+                        {"value": gz, "name": "/IMU/gyro_z"},
+                        
+                        {"value": ax, "name": "/IMU/lin_accel_x"},
+                        {"value": ay, "name": "/IMU/lin_accel_y"},
+                        {"value": az, "name": "/IMU/lin_accel_z"}
+                    ]
 
-                            {"name": "/IMU/heading", "value": heading, "unit": "deg"},
-                            {"name": "/IMU/roll", "value": roll, "unit": "deg"},
-                            {"name": "/IMU/pitch", "value": pitch, "unit": "deg"},
-
-                            {"name": "/IMU/gyro_x", "value": gx, "unit": "deg/s"},
-                            {"name": "/IMU/gyro_y", "value": gy, "unit": "deg/s"},
-                            {"name": "/IMU/gyro_z", "value": gz, "unit": "deg/s"},
-
-                            {"name": "/IMU/lin_accel_x", "value": ax, "unit": "m/s²"},
-                            {"name": "/IMU/lin_accel_y", "value": ay, "unit": "m/s²"},
-                            {"name": "/IMU/lin_accel_z", "value": az, "unit": "m/s²"},
-                        ]
-                    }
-
-                    callback(payload)
+                    for s in signals:
+                        payload = {
+                            "v": s["value"],
+                            "n": s["name"]
+                        }
+                        callback(payload)
 
                 except Exception as e:
                     logger.error(f"IMU error: {e}")

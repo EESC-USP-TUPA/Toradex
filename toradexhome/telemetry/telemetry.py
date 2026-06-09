@@ -114,8 +114,12 @@ def acquisition_listener(fox, aggregator):
 
                 try:
                     msg = json.loads(line)
+                    
+                    if "n" in msg and "v" in msg:
+                        if msg.get("v") is not None:
+                            aggregator.add_value(msg.get("n"), msg.get("v"))
 
-                    if msg.get("source") == "can":
+                    elif msg.get("source") == "can":
                         signals = msg.get("signals", {})
                         for name, value in signals.items():
                             aggregator.add_value(f"/CAN/{name}", value)
