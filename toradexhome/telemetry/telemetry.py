@@ -124,7 +124,7 @@ def acquisition_listener(fox, aggregator):
                         for name, value in signals.items():
                             aggregator.add_value(f"/CAN/{name}", value)
 
-                    elif msg.get("source") == "imu":
+                    '''elif msg.get("source") == "imu":
                         for signal in msg.get("signals", []):
                             name = signal.get("name")
                             value = signal.get("value")
@@ -140,7 +140,7 @@ def acquisition_listener(fox, aggregator):
                             aggregator.add_value("/GPS/speed", msg.get("speed", 0.0))
                             aggregator.add_value("/GPS/heading", msg.get("heading", 0.0))
                             aggregator.add_value("/GPS/satellites", msg.get("satellites", 0))
-                            aggregator.add_value("/GPS/fix", msg.get("fix", 0))
+                            aggregator.add_value("/GPS/fix", msg.get("fix", 0))'''
 
                 except Exception as e:
                     logging.error(f"Invalid JSON line in acquisition: {e}")
