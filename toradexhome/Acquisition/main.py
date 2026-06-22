@@ -50,8 +50,13 @@ mcap_logger = McapTelemetryLogger(output_dir="/logs/acquisition")
 # =========================================================
 
 def broadcast(payload):
-    if mcap_logger:
-        mcap_logger.log_payload(payload)
+    # --- ISOLADO COM TRY/EXCEPT: Se o logger falhar, não derruba a rede ---
+    try:
+        if mcap_logger:
+            mcap_logger.log_payload(payload)
+    except Exception as e:
+        logging.error(f"Falha catastrófica ao registrar MCAP no broadcast: {e}")
+    # ----------------------------------------------------------------------
 
     try:
         raw = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
