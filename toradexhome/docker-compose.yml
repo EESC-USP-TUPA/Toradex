@@ -29,6 +29,8 @@ services:
     devices:
       - "/dev/i2c-3:/dev/i2c-3"
       - "/dev/ttymxc1:/dev/ttymxc1"
+    volumes:
+      - ./logs/acquisition:/logs:acquisition
     command: python3 main.py
     restart: unless-stopped
 
