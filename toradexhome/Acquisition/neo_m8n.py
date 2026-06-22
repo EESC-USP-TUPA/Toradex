@@ -74,8 +74,11 @@ def start(callback):
                     buffer += data
 
                     while "\n" in buffer:
+
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()
+
+                        dado_atualizado = False
 
                         # DEBUG RAW DATA
                         print("RAW:", line)
@@ -95,6 +98,7 @@ def start(callback):
                             current_data["fix"] = int(parts[6]) if parts[6] else 0
                             current_data["satellites"] = int(parts[7]) if parts[7] else 0
                             current_data["altitude"] = float(parts[9]) if parts[9] else 0.0
+                            dado_atualizado = True
 
                         # ---------------------------
                         # RMC → velocidade
@@ -112,23 +116,26 @@ def start(callback):
                             speed_knots = float(parts[7]) if parts[7] else 0.0
                             current_data["speed"] = speed_knots * 0.514444
                             current_data["heading"] = float(parts[8]) if parts[8] else 0.0
+                            dado_atualizado = True
 
                         # ---------------------------
                         # ENVIA SEM PRECISAR DE FIX
                         # ---------------------------
-                        if (
-                            current_data["latitude"] is not None
-                            and current_data["longitude"] is not None
-                        ):
 
-                            payload = {
-                                "source": "gps",
-                                "timestamp_ns": time.time_ns(),
-                                **current_data
-                            }
+                        # Caso seja um dado de interesse
+                        if dado_atualizado:
+                            
+                            # Envio modularizado dos dados (nome e valor)
+                            for name, value in current_data.items():
+                                if name in ("latitude", "longitude") and value is None:
+                                    continue
 
-                            print("SENDING:", payload)
-                            callback(payload)
+                                payload = {
+                                    "v": value,
+                                    "n": f"/GPS/{name}"
+                                }
+
+                                callback(payload)
 
             except Exception as e:
                 logger.error(f"GNSS error: {e}")

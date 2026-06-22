@@ -36,6 +36,7 @@ COPY can_sender.py .
 COPY can_decoder.py .
 COPY bno055.py .
 COPY neo_m8n.py .
+COPY mcap_logger.py .
 
 # -------------------------------------------------
 # Run acquisition

@@ -16,6 +16,71 @@ CONTROL_PORT = 7001
 RECONNECT_DELAY = 2
 
 # ==========================================================
+# TIME-WINDOW AGGREGATOR (20Hz)
+# ==========================================================
+
+class TimeWindowAggregator:
+    def __init__(self, fox_sender, interval_sec=0.05):
+        self.fox = fox_sender
+        self.interval = interval_sec
+        self.lock = threading.Lock()
+        self.buffers = {}
+        self.meta_buffers = {}
+        
+    def add_value(self, topic, value, unit=""):
+        """Thread-safe method to dump incoming raw hardware data."""
+        # Only accept numeric values for averaging
+        if not isinstance(value, (int, float)):
+            return
+            
+        with self.lock:
+            if topic not in self.buffers:
+                self.buffers[topic] = []
+            self.buffers[topic].append(value)
+            self.meta_buffers[topic] = unit
+
+    def _flush_and_send(self):
+        """Computes averages and pushes to Foxglove."""
+        with self.lock:
+            current_buffers = self.buffers
+            self.buffers = {}
+            meta = self.meta_buffers
+            self.meta_buffers = {}
+
+        timestamp = time.time_ns()
+
+        for topic, values in current_buffers.items():
+            if not values:
+                continue
+            
+            # Calculate the average of all data points received in this window
+            avg_value = sum(values) / len(values)
+            unit = meta.get(topic, "")
+
+            payload = {"value": avg_value, "timestamp_ns": timestamp}
+            if unit: 
+                payload["unit"] = unit
+
+            try:
+                self.fox.send_message(topic, payload)
+            except Exception as e:
+                logging.error(f"Failed to send averaged data for {topic}: {e}")
+
+    def start(self):
+        """Runs the 20Hz broadcast loop in the background."""
+        def loop():
+            while True:
+                start_time = time.time()
+                self._flush_and_send()
+                
+                # Precise sleep calculation to maintain an accurate 20Hz rhythm
+                elapsed = time.time() - start_time
+                sleep_time = max(0, self.interval - elapsed)
+                time.sleep(sleep_time)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+# ==========================================================
 # CONNECTION HELPERS
 # ==========================================================
 
@@ -26,20 +91,16 @@ def connect(host, port):
     return sock
 
 # ==========================================================
-# ACQUISITION LISTENER (OPTIMIZED)
+# ACQUISITION LISTENER
 # ==========================================================
 
-def acquisition_listener(fox):
-    last_sent_times = {}
-    MIN_INTERVAL_NS = 50_000_000  # 50ms = 20Hz update limit
-
+def acquisition_listener(fox, aggregator):
     while True:
         try:
             logging.info("Connecting to acquisition...")
             sock = connect(ACQUISITION_HOST, ACQUISITION_PORT)
             logging.info("Connected to acquisition")
 
-            # Use makefile for high-speed line reading
             sock_file = sock.makefile('r', encoding='utf-8')
 
             while True:
@@ -53,43 +114,33 @@ def acquisition_listener(fox):
 
                 try:
                     msg = json.loads(line)
-                    timestamp = msg.get("timestamp_ns", time.time_ns())
+                    
+                    if "n" in msg and "v" in msg:
+                        if msg.get("v") is not None:
+                            aggregator.add_value(msg.get("n"), msg.get("v"))
 
-                    if msg.get("source") == "can":
+                    elif msg.get("source") == "can":
                         signals = msg.get("signals", {})
                         for name, value in signals.items():
-                            if isinstance(value, (int, float)):
-                                topic = f"/CAN/{name}"
-                                last_time = last_sent_times.get(topic, 0)
-                                if (timestamp - last_time) >= MIN_INTERVAL_NS:
-                                    fox.send_message(topic, {"value": value, "unit": "", "timestamp_ns": timestamp})
-                                    last_sent_times[topic] = timestamp
+                            aggregator.add_value(f"/CAN/{name}", value)
 
-                    elif msg.get("source") == "imu":
+                    '''elif msg.get("source") == "imu":
                         for signal in msg.get("signals", []):
                             name = signal.get("name")
                             value = signal.get("value")
-                            if name and isinstance(value, (int, float)):
-                                last_time = last_sent_times.get(name, 0)
-                                if (timestamp - last_time) >= MIN_INTERVAL_NS:
-                                    fox.send_message(name, {"value": value})
-                                    last_sent_times[name] = timestamp
+                            if name:
+                                aggregator.add_value(name, value)
 
                     elif msg.get("source") == "gps":
+                        # Break GPS payload into individual topics for averaging
                         if "latitude" in msg and "longitude" in msg:
-                            fox.send_message(
-                                "/GPS",
-                                {
-                                    "latitude": msg["latitude"],
-                                    "longitude": msg["longitude"],
-                                    "altitude": msg.get("altitude", 0.0),
-                                    "speed": msg.get("speed", 0.0),
-                                    "heading": msg.get("heading", 0.0),
-                                    "satellites": msg.get("satellites", 0),
-                                    "fix": msg.get("fix", 0),
-                                    "timestamp_ns": timestamp
-                                }
-                            )
+                            aggregator.add_value("/GPS/latitude", msg.get("latitude", 0.0))
+                            aggregator.add_value("/GPS/longitude", msg.get("longitude", 0.0))
+                            aggregator.add_value("/GPS/altitude", msg.get("altitude", 0.0))
+                            aggregator.add_value("/GPS/speed", msg.get("speed", 0.0))
+                            aggregator.add_value("/GPS/heading", msg.get("heading", 0.0))
+                            aggregator.add_value("/GPS/satellites", msg.get("satellites", 0))
+                            aggregator.add_value("/GPS/fix", msg.get("fix", 0))'''
 
                 except Exception as e:
                     logging.error(f"Invalid JSON line in acquisition: {e}")
@@ -100,17 +151,16 @@ def acquisition_listener(fox):
             time.sleep(RECONNECT_DELAY)
 
 # ==========================================================
-# CONTROL LISTENER (OPTIMIZED)
+# CONTROL LISTENER
 # ==========================================================
 
-def control_listener(fox):
+def control_listener(fox, aggregator):
     while True:
         try:
             logging.info("Connecting to control...")
             sock = connect(CONTROL_HOST, CONTROL_PORT)
             logging.info("Connected to control")
 
-            # Use makefile for high-speed line reading
             sock_file = sock.makefile('r', encoding='utf-8')
 
             while True:
@@ -124,19 +174,18 @@ def control_listener(fox):
 
                 try:
                     msg = json.loads(line)
-                    timestamp = time.time_ns()
 
                     if msg.get("gps_speed_raw") is not None:
-                        fox.send_message("/control/speed/gps_raw", {"value": msg["gps_speed_raw"], "unit": "m/s", "timestamp_ns": timestamp})
+                        aggregator.add_value("/control/speed/gps_raw", msg["gps_speed_raw"], unit="m/s")
 
                     if msg.get("imu_speed_predicted") is not None:
-                        fox.send_message("/control/speed/imu_predicted", {"value": msg["imu_speed_predicted"], "unit": "m/s", "timestamp_ns": timestamp})
+                        aggregator.add_value("/control/speed/imu_predicted", msg["imu_speed_predicted"], unit="m/s")
 
                     if msg.get("kalman_speed_filtered") is not None:
-                        fox.send_message("/control/speed/kalman_filtered", {"value": msg["kalman_speed_filtered"], "unit": "m/s", "timestamp_ns": timestamp})
+                        aggregator.add_value("/control/speed/kalman_filtered", msg["kalman_speed_filtered"], unit="m/s")
 
                     if msg.get("kalman_covariance") is not None:
-                        fox.send_message("/control/speed/kalman_covariance", {"value": msg["kalman_covariance"], "unit": "", "timestamp_ns": timestamp})
+                        aggregator.add_value("/control/speed/kalman_covariance", msg["kalman_covariance"])
 
                 except Exception as e:
                     logging.error(f"Invalid JSON line in control: {e}")
@@ -154,8 +203,13 @@ def main():
     fox = FoxgloveSender(port=9000)
     fox.start()
 
-    threading.Thread(target=acquisition_listener, args=(fox,), daemon=True).start()
-    threading.Thread(target=control_listener, args=(fox,), daemon=True).start()
+    # Initialize the 20Hz (0.05 seconds) aggregator
+    aggregator = TimeWindowAggregator(fox, interval_sec=0.05)
+    aggregator.start()
+
+    # Pass the aggregator down into the network listeners
+    threading.Thread(target=acquisition_listener, args=(fox, aggregator), daemon=True).start()
+    threading.Thread(target=control_listener, args=(fox, aggregator), daemon=True).start()
 
     while True:
         time.sleep(1)

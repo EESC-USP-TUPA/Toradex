@@ -10,6 +10,7 @@ from can_sender import CANSender
 from can_decoder import CANDecoderCore
 from bno055 import start as start_imu
 from neo_m8n import start as start_gnss
+from mcap_logger import McapTelemetryLogger
 
 
 # =========================================================
@@ -41,12 +42,16 @@ clients_lock = threading.Lock()
 decoder = CANDecoderCore()
 sender = CANSender(interface=CAN_INTERFACE)
 
+mcap_logger = McapTelemetryLogger(output_dir="/logs/acquisition")
+
 
 # =========================================================
 # BROADCAST (Low-latency + Safe)
 # =========================================================
 
 def broadcast(payload):
+    if mcap_logger:
+        mcap_logger.log_payload(payload)
 
     try:
         raw = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
@@ -210,7 +215,19 @@ def main():
     # CAN RX (blocking loop)
     # ============================
     receiver = CANReceiver(interface=CAN_INTERFACE)
-    receiver.start_receiving(handle_can)
+
+    try:
+        logging.info("Iniciando loop de recepção CAN...")
+        receiver.start_receiving(handle_can)
+    except KeyboardInterrupt:
+        logging.info("Desligamento solicitado (KeyboardInterrupt).")
+    except Exception as e:
+        logging.error(f"Erro fatal na aquisição: {e}")
+    finally:
+        logging.info("Executando shutdown limpo do logger MCAP...")
+        if mcap_logger:
+            mcap_logger.close()
+        logging.info("Sistema finalizado.")
 
 
 if __name__ == "__main__":

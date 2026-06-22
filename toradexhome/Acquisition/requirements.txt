@@ -2,3 +2,5 @@ python-can>=4.0.0
 smbus2
 pyserial
 requests
+mcap>=1.1.1
+mcap-protobuf-support>=0.3.0

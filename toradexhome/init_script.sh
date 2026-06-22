@@ -11,8 +11,8 @@ sleep 1
 ip link set can0 up
 sleep 1
 
-# Rodar Docker Compose (apenas serviços principais)
+# Rodar Docker Compose
 cd /home/torizon/
-docker-compose up -d --remove-orphans testetoradex weston acquisition control telemetry
+docker compose up -d --remove-orphans weston acquisition control telemetry
 
 /home/torizon/usb-monitor.sh
