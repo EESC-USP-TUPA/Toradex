@@ -53,7 +53,7 @@ class FoxgloveSender:
         timestamp_ns = payload.get("timestamp_ns", time.time_ns())
 
         # Serialize JSON here in the caller's thread to keep the asyncio loop fast
-        serialized_payload = json.dumps(payload.get("value")).encode("utf-8")
+        serialized_payload = json.dumps(payload).encode("utf-8")
 
         asyncio.run_coroutine_threadsafe(
             self._ensure_channel_and_send(topic, serialized_payload, timestamp_ns),
