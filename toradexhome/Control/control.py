@@ -13,9 +13,40 @@ ACQUISITION_PORT = 7000
 OUTPUT_PORT = 7001
 
 
+# ==========================================================
+# CLASSE DE DERIVADA ADICIONADA AQUI
+# ==========================================================
+class RealTimeDerivative:
+    def __init__(self):
+        self.last_value = None
+        self.last_time = None
+
+    def calculate(self, current_value):
+        current_time = time.time()
+        
+        if self.last_value is None or self.last_time is None:
+            self.last_value = current_value
+            self.last_time = current_time
+            return 0.0
+
+        dt = current_time - self.last_time
+
+        if dt <= 0.0001:
+            return 0.0
+
+        derivative = (current_value - self.last_value) / dt
+
+        self.last_value = current_value
+        self.last_time = current_time
+
+        return derivative
+
+
 class ControlECU:
     def __init__(self):
         self.kalman = SpeedKalman()
+        # Inicializa a derivada do ângulo
+        self.angle_derivative = RealTimeDerivative()
         self.clients = []
 
     def start(self):
@@ -83,8 +114,19 @@ class ControlECU:
 
     def process_message(self, msg):
 
+        data_list = []
+        value = None
+        name = None
+
         imu_accel = None
         gps_speed = None
+
+        angle_position = None
+
+        if "n" in msg and "v" in msg:
+            if msg.get("v") is not None:
+                value = msg.get("v")
+                name = msg.get("n")
 
         if msg.get("source") == "imu":
             for signal in msg.get("signals", []):
@@ -93,6 +135,22 @@ class ControlECU:
 
         if msg.get("source") == "gps":
             gps_speed = msg.get("speed")
+
+        if name == "IMU/yaw" or name == "IMU/raw" or name == "IMU/pitch":
+            angle_position = value
+
+        # ======================================================
+        # CÁLCULO DA DERIVADA E INCLUSÃO NA LISTA
+        # ======================================================
+        if angle_position is not None:
+            # Calcula a derivada
+            angle_velocity = self.angle_derivative.calculate(angle_position)
+            
+            # Adiciona na lista com o sufixo _derivative no nome
+            data_list.append({
+                "n": f"{name}_derivative",
+                "v": angle_velocity
+            })
 
         imu_predicted = None
         kalman_speed = None
@@ -105,17 +163,18 @@ class ControlECU:
         else:
             kalman_speed = imu_predicted
 
-        if kalman_speed is None:
-            return
+        if kalman_speed is not None:
+            data_list.append({
+                "n": "kalman_speed_filtered",
+                "v": kalman_speed
+            })
 
-        output = {
-            "gps_speed_raw": gps_speed,
-            "imu_speed_predicted": imu_predicted,
-            "kalman_speed_filtered": kalman_speed,
-            "kalman_covariance": self.kalman.P
-        }
-
-        self.broadcast(output)
+        for data in data_list:
+            payload = {
+                "v": data.get("v"),
+                "n": data.get("n"),
+            }
+            self.broadcast(payload)
 
 
 if __name__ == "__main__":

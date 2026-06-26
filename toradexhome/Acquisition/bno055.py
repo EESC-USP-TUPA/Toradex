@@ -101,8 +101,8 @@ def start(callback, i2c_bus=3, rate_hz=200):
                 try:
 
                     # Euler (1 LSB = 1/16 deg)
-                    h, r, p = read_vector(bus, REG_EULER)
-                    heading = h / 16.0
+                    y, r, p = read_vector(bus, REG_EULER)
+                    yaw = y / 16.0
                     roll = r / 16.0
                     pitch = p / 16.0
 
@@ -122,7 +122,7 @@ def start(callback, i2c_bus=3, rate_hz=200):
                     # APPLY LOW PASS FILTER
                     # ===============================
 
-                    heading = lpf.apply("heading", heading)
+                    yaw = lpf.apply("yaw", yaw)
                     roll = lpf.apply("roll", roll)
                     pitch = lpf.apply("pitch", pitch)
 
@@ -135,7 +135,7 @@ def start(callback, i2c_bus=3, rate_hz=200):
                     az = lpf.apply("lin_accel_z", az)
 
                     signals = [
-                        {"value": heading, "name": "/IMU/heading"},
+                        {"value": yaw, "name": "/IMU/yaw"},
                         {"value": roll, "name": "/IMU/roll"},
                         {"value": pitch, "name": "/IMU/pitch"},
                         
