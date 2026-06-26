@@ -175,17 +175,18 @@ def control_listener(fox, aggregator):
                 try:
                     msg = json.loads(line)
 
-                    if msg.get("gps_speed_raw") is not None:
-                        aggregator.add_value("/control/speed/gps_raw", msg["gps_speed_raw"], unit="m/s")
-
-                    if msg.get("imu_speed_predicted") is not None:
-                        aggregator.add_value("/control/speed/imu_predicted", msg["imu_speed_predicted"], unit="m/s")
-
-                    if msg.get("kalman_speed_filtered") is not None:
-                        aggregator.add_value("/control/speed/kalman_filtered", msg["kalman_speed_filtered"], unit="m/s")
-
-                    if msg.get("kalman_covariance") is not None:
-                        aggregator.add_value("/control/speed/kalman_covariance", msg["kalman_covariance"])
+                    # Adaptado para o mesmo padrão do acquisition_listener:
+                    if "n" in msg and "v" in msg:
+                        if msg.get("v") is not None:
+                            # Pega o nome vindo do ControlECU
+                            topic_name = msg.get("n")
+                            
+                            # Limpa barras duplas caso o nome original já tenha barra
+                            if topic_name.startswith("/"):
+                                topic_name = topic_name.lstrip("/")
+                                
+                            # Manda pro Foxglove agrupado dentro da "pasta" /control/
+                            aggregator.add_value(f"/control/{topic_name}", msg.get("v"))
 
                 except Exception as e:
                     logging.error(f"Invalid JSON line in control: {e}")
