@@ -136,7 +136,7 @@ class ControlECU:
         if msg.get("source") == "gps":
             gps_speed = msg.get("speed")
 
-        if name == "IMU/yaw" or name == "IMU/raw" or name == "IMU/pitch":
+        if name == "/IMU/yaw" or name == "/IMU/roll" or name == "/IMU/pitch":
             angle_position = value
 
         # ======================================================
