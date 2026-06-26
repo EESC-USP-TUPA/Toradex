@@ -14,30 +14,30 @@ OUTPUT_PORT = 7001
 
 
 # ==========================================================
-# CLASSE DE DERIVADA ADICIONADA AQUI
+# CLASSE DE DERIVADA MULTI-EIXO
 # ==========================================================
 class RealTimeDerivative:
     def __init__(self):
-        self.last_value = None
-        self.last_time = None
+        self.last_value = {}
+        self.last_time = {}
 
-    def calculate(self, current_value):
+    def calculate(self, name, current_value):
         current_time = time.time()
         
-        if self.last_value is None or self.last_time is None:
-            self.last_value = current_value
-            self.last_time = current_time
+        if name not in self.last_value or name not in self.last_time:
+            self.last_value[name] = current_value
+            self.last_time[name] = current_time
             return 0.0
 
-        dt = current_time - self.last_time
+        dt = current_time - self.last_time[name]
 
         if dt <= 0.0001:
             return 0.0
 
-        derivative = (current_value - self.last_value) / dt
+        derivative = (current_value - self.last_value[name]) / dt
 
-        self.last_value = current_value
-        self.last_time = current_time
+        self.last_value[name] = current_value
+        self.last_time[name] = current_time
 
         return derivative
 
@@ -50,7 +50,6 @@ class ControlECU:
         self.clients = []
 
     def start(self):
-
         self.output_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.output_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.output_socket.bind(("0.0.0.0", OUTPUT_PORT))
@@ -96,6 +95,7 @@ class ControlECU:
     def accept_clients(self):
         while True:
             client, addr = self.output_socket.accept()
+            client.settimeout(0.05) # Gambiarra de segurança para não travar
             logging.info(f"🔗 Telemetry connected: {addr}")
             self.clients.append(client)
 
@@ -113,44 +113,40 @@ class ControlECU:
             self.clients.remove(d)
 
     def process_message(self, msg):
-
         data_list = []
-        value = None
-        name = None
-
+        
+        # Extração flexível de nome e valor
+        name = msg.get("n")
+        value = msg.get("v")
+        
         imu_accel = None
         gps_speed = None
-
         angle_position = None
 
-        if "n" in msg and "v" in msg:
-            if msg.get("v") is not None:
-                value = msg.get("v")
-                name = msg.get("n")
-
-        if msg.get("source") == "imu":
+        # 1. Verifica Aceleração (formato antigo com source ou novo plano)
+        if name in ["/IMU/lin_accel_x", "IMU/lin_accel_x"]:
+            imu_accel = value
+        elif msg.get("source") == "imu":
             for signal in msg.get("signals", []):
-                if signal.get("name") == "/IMU/lin_accel_x":
+                if signal.get("name") in ["/IMU/lin_accel_x", "IMU/lin_accel_x"]:
                     imu_accel = signal.get("value")
 
-        if msg.get("source") == "gps":
+        # 2. Verifica Velocidade GPS
+        if name in ["/GPS/speed", "GPS/speed", "gps_speed"]:
+            gps_speed = value
+        elif msg.get("source") == "gps":
             gps_speed = msg.get("speed")
 
-        if name == "/IMU/yaw" or name == "/IMU/roll" or name == "/IMU/pitch":
+        # 3. Verifica Ângulos
+        if name in ["/IMU/yaw", "IMU/yaw", "/IMU/roll", "IMU/roll", "/IMU/pitch", "IMU/pitch"]:
             angle_position = value
 
         # ======================================================
-        # CÁLCULO DA DERIVADA E INCLUSÃO NA LISTA
+        # CÁLCULOS
         # ======================================================
         if angle_position is not None:
-            # Calcula a derivada
-            angle_velocity = self.angle_derivative.calculate(angle_position)
-            
-            # Adiciona na lista com o sufixo _derivative no nome
-            data_list.append({
-                "n": f"{name}_derivative",
-                "v": angle_velocity
-            })
+            angle_velocity = self.angle_derivative.calculate(name, angle_position)
+            data_list.append({"n": f"{name}_derivative", "v": float(angle_velocity)})
 
         imu_predicted = None
         kalman_speed = None
@@ -164,16 +160,19 @@ class ControlECU:
             kalman_speed = imu_predicted
 
         if kalman_speed is not None:
-            data_list.append({
-                "n": "kalman_speed_filtered",
-                "v": kalman_speed
-            })
+            # Garante float nativo
+            try:
+                k_val = float(kalman_speed)
+            except:
+                k_val = float(kalman_speed[0])
+            data_list.append({"n": "kalman_speed_filtered", "v": k_val})
 
+        # ======================================================
+        # BROADCAST COM LOG DE DEBUG
+        # ======================================================
         for data in data_list:
-            payload = {
-                "v": data.get("v"),
-                "n": data.get("n"),
-            }
+            payload = {"v": data.get("v"), "n": data.get("n")}
+            logging.info(f"🚀 Enviando: {payload}")
             self.broadcast(payload)
 
 
